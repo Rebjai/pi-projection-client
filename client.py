@@ -1,30 +1,397 @@
-# client.py
-import socketio, os
-from PIL import Image
-import io, binascii
+#!/usr/bin/env python3
+"""
+client/client.py
+RPi client that registers to the server, downloads assigned tiles, saves config locally,
+applies homography on SHOW and writes processed images for each HDMI output.
+It spawns display_worker processes (one per configured display).
+"""
 
-sio = socketio.Client()
+import os
+import sys
+import time
+import json
+import errno
+import signal
+import shutil
+import requests
+import threading
+import traceback
+from multiprocessing import Process
+from urllib.parse import urlparse
+from typing import Dict, Any, List
 
-CLIENT_ID = "pi1"
-TILE_FOLDER = "tiles"
+import numpy as np
+import cv2
+import socketio  # python-socketio client
 
-os.makedirs(TILE_FOLDER, exist_ok=True)
+# Paths
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_DIR = os.path.join(BASE_DIR, "config")
+LOCAL_CONFIG_PATH = os.path.join(CONFIG_DIR, "client.json")  # local editable config
+TILES_DIR = os.path.join(BASE_DIR, "tiles")
+DISPLAY_OUT_DIR = os.path.join(BASE_DIR, "display_out")
+LOG_PREFIX = "[client]"
 
+# Ensure folders
+os.makedirs(CONFIG_DIR, exist_ok=True)
+os.makedirs(TILES_DIR, exist_ok=True)
+os.makedirs(DISPLAY_OUT_DIR, exist_ok=True)
+
+# --- Helpers: local config ---
+def create_template_config(path):
+    template = {
+        "client_id": "pi-01",
+        "server_url": "http://192.168.1.50:5000",   # EDIT this to your server URL
+        "displays": [0],                           # physical display indexes available e.g. [0] or [0,1]
+        # assignments will be created/updated by ASSIGN_TILES
+        "assignments": [],   # list of {"image": "name.png", "tile_index": 0, "hdmi_output": 0, "file": "path", "downloaded_at": 0}
+        "homographies": {}   # "tile_index": [[...],[...],[...]]
+    }
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(template, f, indent=2)
+    print(LOG_PREFIX, "Template config written to", path)
+    print(LOG_PREFIX, "Edit server_url and client_id then restart the client.")
+    return template
+
+def load_local_config() -> Dict[str, Any]:
+    if not os.path.exists(LOCAL_CONFIG_PATH):
+        create_template_config(LOCAL_CONFIG_PATH)
+        sys.exit(1)  # exit so user can edit config
+    with open(LOCAL_CONFIG_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def save_local_config(cfg: Dict[str, Any]):
+    with open(LOCAL_CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+
+def ensure_displays_in_config(path="config/client.json"):
+    config = load_local_config()
+    # If displays not set, try to auto-detect HDMI outputs
+
+    detected = detect_display_outputs()
+    if not detected:
+        detected = [0]  # fallback
+    config["displays"] = detected
+    save_local_config(config)
+
+    return config
+
+# --- Display worker launcher (multiprocess) ---
+def start_display_worker_process(drm_name: str) -> Process:
+    """Spawn display_worker.py as a separate process for a given DRM display."""
+    worker_py = os.path.join(BASE_DIR, "display_worker.py")
+    if not os.path.exists(worker_py):
+        print(LOG_PREFIX, "display_worker.py not found; create it in same folder as client.py")
+        return None
+    proc = Process(target=_run_display_worker_subprocess, args=(drm_name,))
+    proc.daemon = True
+    proc.start()
+    print(LOG_PREFIX, f"Spawned display worker for DRM display {drm_name} pid={proc.pid}")
+    return proc
+
+def _run_display_worker_subprocess(drm_name: str):
+    """
+    Import display_worker.py and call main() directly.
+    display_worker.main will map DRM name -> Xrandr -> SDL index internally.
+    """
+    import importlib.util
+
+    worker_path = os.path.join(BASE_DIR, "display_worker.py")
+    spec = importlib.util.spec_from_file_location("display_worker", worker_path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.main(drm_name)  # now accepts DRM name directly
+
+
+# --- Networking / SocketIO ---
+sio = socketio.Client(reconnection=True, logger=False, engineio_logger=False)
+
+# We'll fill these after loading config
+LOCAL_CFG: Dict[str, Any] = {}
+CLIENT_ID = None
+SERVER_URL = None
+DISPLAY_PROCS: List[Process] = []
+
+# Lock to avoid concurrent write to config
+config_lock = threading.Lock()
+
+def safe_print(*args, **kwargs):
+    print(LOG_PREFIX, *args, **kwargs)
+
+# Downloads
+def download_file(url: str, out_path: str, timeout: int = 15) -> None:
+    safe_print("Downloading", url, "->", out_path)
+    tmp = out_path + ".part"
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    try:
+        with requests.get(url, stream=True, timeout=timeout) as r:
+            r.raise_for_status()
+            with open(tmp, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+        os.replace(tmp, out_path)
+    except Exception as e:
+        safe_print("Download error:", e)
+        if os.path.exists(tmp):
+            try: os.remove(tmp)
+            except: pass
+        raise
+
+# SocketIO handlers
 @sio.event
 def connect():
-    print("Connected to server")
-    sio.emit("register", {"client_id": CLIENT_ID})
+    safe_print("Connected to server:", SERVER_URL)
+    meta = {"displays": LOCAL_CFG.get("displays", [0])}
+    sio.emit("register", {"client_id": CLIENT_ID, "meta": meta})
+    safe_print("Register sent:", CLIENT_ID, meta)
 
-@sio.on("tile")
-def tile(data):
-    filename = data["filename"]
-    img_bytes = binascii.unhexlify(data["data"])
-    path = os.path.join(TILE_FOLDER, filename)
-    with open(path, "wb") as f:
-        f.write(img_bytes)
-    print(f"Saved {filename}")
-    # Quick display test with Pillow
-    Image.open(path).show()
+@sio.on("registered")
+def on_registered(data):
+    safe_print("Server registered response:", data)
 
-sio.connect("http://127.0.0.1:5000")
-sio.wait()
+@sio.on("ASSIGN_TILES")
+def on_assign_tiles(payload):
+    try:
+        safe_print("ASSIGN_TILES received:", payload.get("image"), "tiles:", len(payload.get("tiles", [])))
+        handle_assign_tiles(payload)
+    except Exception as e:
+        safe_print("Error in ASSIGN_TILES:", e, traceback.format_exc())
+
+@sio.on("SHOW")
+def on_show(payload):
+    try:
+        safe_print("SHOW received:", payload)
+        handle_show(payload)
+    except Exception as e:
+        safe_print("Error in SHOW:", e, traceback.format_exc())
+
+@sio.event
+def disconnect():
+    safe_print("Disconnected from server")
+
+# --- Handlers ---
+def handle_assign_tiles(payload: Dict[str, Any]):
+    """
+    payload example:
+    {
+      "image": "name.png",
+      "tiles": [
+         {"tile_index": 0, "url": "http://server/tiles/name/client_pi-01_tile_0.png", "hdmi_output": 1, "homography": [[...]]}
+         ...
+      ],
+      "frame_id": 1234
+    }
+    """
+    image = payload.get("image")
+    tiles = payload.get("tiles", [])
+    if not image or not tiles:
+        safe_print("Empty assign payload")
+        return
+
+    image_basename = os.path.splitext(os.path.basename(image))[0]
+    out_dir = os.path.join(TILES_DIR, image_basename)
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Keep track of updated assignments
+    updated_assignments = []
+    updated_homographies = {}
+
+    for tile in tiles:
+        tidx = tile.get("tile_index")
+        url = tile.get("url")
+        hdmi_out = int(tile.get("hdmi_output", 0))
+        H = tile.get("homography", None)
+
+        if url is None:
+            safe_print("tile missing url:", tile)
+            continue
+
+        fname = os.path.basename(urlparse(url).path)
+        out_path = os.path.join(out_dir, fname)
+        try:
+            download_file(url, out_path)
+        except Exception as e:
+            safe_print("Failed download for tile", tidx, "url", url, "err", e)
+            continue
+
+        # Save assignment entry
+        entry = {
+            "image": image,
+            "image_basename": image_basename,
+            "tile_index": tidx,
+            "hdmi_output": hdmi_out,
+            "file": out_path,
+            "downloaded_at": int(time.time())
+        }
+        updated_assignments.append(entry)
+
+        # Save homography mapping (if given) locally
+        if H is not None:
+            # ensure H is a 3x3 numeric list
+            try:
+                arr = np.array(H, dtype=float)
+                if arr.shape == (3,3):
+                    updated_homographies[str(tidx)] = H
+                else:
+                    safe_print("Invalid homography shape for tile", tidx)
+            except Exception:
+                safe_print("Invalid homography format for tile", tidx)
+
+    # Persist into local config safely
+    with config_lock:
+        cfg = LOCAL_CFG
+        # Replace assignments for this image's tile_indexes (we'll remove older assignments for same tile_index)
+        # Simpler: remove existing assignments that refer to the same tile_indexes of image_basename
+        existing = cfg.get("assignments", [])
+        to_remove = { (a.get("image_basename"), a.get("tile_index")) for a in updated_assignments }
+        new_existing = [a for a in existing if (a.get("image_basename"), a.get("tile_index")) not in to_remove]
+        new_existing.extend(updated_assignments)
+        cfg["assignments"] = new_existing
+        # Merge homographies
+        homos = cfg.get("homographies", {})
+        homos.update(updated_homographies)
+        cfg["homographies"] = homos
+        save_local_config(cfg)
+    safe_print("Assignments updated locally:", len(updated_assignments))
+    # Ack to server (optional)
+    try:
+        sio.emit("TILES_DOWNLOADED", {"client_id": CLIENT_ID, "image": image, "count": len(updated_assignments)})
+    except Exception:
+        pass
+
+def handle_show(payload: Dict[str, Any]):
+    """
+    On SHOW we:
+    - iterate assignments in local config
+    - load each assigned tile file
+    - apply homography if present
+    - write result to DISPLAY_OUT_DIR/output_<hdmi_output>.png
+    - display workers will detect and show the images
+    """
+    with config_lock:
+        cfg = LOCAL_CFG
+        assignments = cfg.get("assignments", [])
+
+    if not assignments:
+        safe_print("No assignments to show")
+        return
+
+    # For each assignment, create processed image for its hdmi output
+    # If multiple assignments map to the same hdmi_output, last one wins (log warning)
+    target_images_for_output: Dict[int, str] = {}
+    for a in assignments:
+        tile_file = a.get("file")
+        hdmi_out = int(a.get("hdmi_output", 0))
+        tile_index = a.get("tile_index")
+        if not tile_file or not os.path.exists(tile_file):
+            safe_print("Missing tile file for assignment:", a)
+            continue
+
+        # Read image
+        img = cv2.imread(tile_file, cv2.IMREAD_COLOR)
+        if img is None:
+            safe_print("Failed reading image:", tile_file)
+            continue
+
+        # Apply homography if available in local config
+        with config_lock:
+            homos = cfg.get("homographies", {})
+            H = homos.get(str(tile_index))
+
+        if H:
+            try:
+                H_np = np.array(H, dtype=np.float32)
+                h, w = img.shape[:2]
+                # We warp to same size as tile (dsize = (w,h))
+                warped = cv2.warpPerspective(img, H_np, (w, h))
+                out_img = warped
+            except Exception as e:
+                safe_print("Homography warp failed for tile", tile_index, "err", e)
+                out_img = img
+        else:
+            out_img = img
+
+        # Save result to display out path
+        out_fname = f"output_{hdmi_out}.png"
+        out_path = os.path.join(DISPLAY_OUT_DIR, out_fname)
+        # If multiple tiles map to same hdmi, we simply overwrite (last wins). Could be changed to composite.
+        cv2.imwrite(out_path, out_img)
+        target_images_for_output[hdmi_out] = out_path
+        safe_print(f"Prepared display image for hdmi {hdmi_out} -> {out_path}")
+
+    # Optionally notify display workers by touching a small 'trigger' file or rely on workers watching mtime
+    for hdmi, path in target_images_for_output.items():
+        try:
+            # touch the file to update mtime (already written) - ensures worker picks it up
+            os.utime(path, None)
+        except Exception:
+            pass
+
+    # Send a simple ack
+    try:
+        sio.emit("DISPLAY_READY", {"client_id": CLIENT_ID, "frame_id": payload.get("frame_id")})
+    except:
+        pass
+
+# -------------------------
+
+def detect_display_outputs():
+    drm_path = "/sys/class/drm"
+    outputs = []
+    if os.path.exists(drm_path):
+        for entry in os.listdir(drm_path):
+            status_file = os.path.join(drm_path, entry, "status")
+            if os.path.exists(status_file):
+                with open(status_file, "r") as f:
+                    status = f.read().strip()
+                if status in ("connected"):
+                    outputs.append({
+                        "name": entry,
+                        "status": status  # "connected" or "disconnected"
+                    })
+    return outputs
+
+
+def main():
+    global LOCAL_CFG, CLIENT_ID, SERVER_URL, DISPLAY_PROCS
+
+    LOCAL_CFG = ensure_displays_in_config()
+    
+    CLIENT_ID = LOCAL_CFG.get("client_id")
+    SERVER_URL = LOCAL_CFG.get("server_url")
+    displays = LOCAL_CFG.get("displays", [0])
+
+    if not CLIENT_ID or not SERVER_URL:
+        safe_print("client_id or server_url not set in config/client.json — edit the file and restart.")
+        sys.exit(1)
+
+    safe_print("Starting client", CLIENT_ID, "server", SERVER_URL, "displays", displays)
+
+    # spawn display worker processes (one per display index)
+    global DISPLAY_PROCS
+    for d in displays:
+        name = d["name"]
+        p = start_display_worker_process(name)
+
+
+    # connect to socketio with reconnects
+    # Make sure server_url uses http(s) and Socket.IO default path
+    try:
+        sio.connect(SERVER_URL)
+    except Exception as e:
+        safe_print("Initial connect failed:", e)
+    # run forever
+    try:
+        sio.wait()
+    except KeyboardInterrupt:
+        safe_print("Interrupted, shutting down")
+    finally:
+        for p in DISPLAY_PROCS:
+            try:
+                p.terminate()
+            except:
+                pass
+
+if __name__ == "__main__":
+    main()

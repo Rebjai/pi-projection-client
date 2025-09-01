@@ -1,3 +1,7 @@
 python-socketio
 Pillow
 requests
+websocket-client
+numpy
+opencv-python
+pygame
