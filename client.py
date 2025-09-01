@@ -41,8 +41,7 @@ os.makedirs(DISPLAY_OUT_DIR, exist_ok=True)
 def create_template_config(path):
     template = {
         "client_id": "pi-01",
-        "server_url": "http://192.168.1.50:5000",   # EDIT this to your server URL
-        "displays": [0],                           # physical display indexes available e.g. [0] or [0,1]
+        "server_url": "http://127.0.0.1:5000",   # EDIT this to your server URL
         # assignments will be created/updated by ASSIGN_TILES
         "assignments": [],   # list of {"image": "name.png", "tile_index": 0, "hdmi_output": 0, "file": "path", "downloaded_at": 0}
         "homographies": {}   # "tile_index": [[...],[...],[...]]
