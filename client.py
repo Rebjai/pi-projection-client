@@ -140,10 +140,14 @@ def download_file(url: str, out_path: str, timeout: int = 15) -> None:
 # SocketIO handlers
 @sio.event
 def connect():
-    safe_print("Connected to server:", SERVER_URL)
-    meta = {"displays": LOCAL_CFG.get("displays", [0])}
-    sio.emit("register", {"client_id": CLIENT_ID, "meta": meta})
+    safe_print("[connection] Connected to server:", SERVER_URL)
+    cfg = load_local_config()
+    if not cfg:
+        safe_print("Failed loading local config on connect")
+        return
+    meta  = cfg
     safe_print("Register sent:", CLIENT_ID, meta)
+    sio.emit("register", meta)
 
 @sio.on("registered")
 def on_registered(data):
@@ -182,6 +186,7 @@ def handle_assign_tiles(payload: Dict[str, Any]):
       "frame_id": 1234
     }
     """
+    print (LOG_PREFIX, "Handling ASSIGN_TILES payload")
     image = payload.get("image")
     tiles = payload.get("tiles", [])
     if not image or not tiles:
@@ -199,7 +204,7 @@ def handle_assign_tiles(payload: Dict[str, Any]):
     for tile in tiles:
         tidx = tile.get("tile_index")
         url = tile.get("url")
-        hdmi_out = int(tile.get("hdmi_output", 0))
+        hdmi_out = str(tile.get("hdmi_output"))
         H = tile.get("homography", None)
 
         if url is None:
@@ -268,6 +273,7 @@ def handle_show(payload: Dict[str, Any]):
     - write result to DISPLAY_OUT_DIR/output_<hdmi_output>.png
     - display workers will detect and show the images
     """
+    print("handling show")
     with config_lock:
         cfg = LOCAL_CFG
         assignments = cfg.get("assignments", [])
@@ -281,7 +287,7 @@ def handle_show(payload: Dict[str, Any]):
     target_images_for_output: Dict[int, str] = {}
     for a in assignments:
         tile_file = a.get("file")
-        hdmi_out = int(a.get("hdmi_output", 0))
+        hdmi_out = str(a.get("hdmi_output"))
         tile_index = a.get("tile_index")
         if not tile_file or not os.path.exists(tile_file):
             safe_print("Missing tile file for assignment:", a)
@@ -341,14 +347,29 @@ def detect_display_outputs():
     if os.path.exists(drm_path):
         for entry in os.listdir(drm_path):
             status_file = os.path.join(drm_path, entry, "status")
+            modes_file = os.path.join(drm_path, entry, "modes")
             if os.path.exists(status_file):
                 with open(status_file, "r") as f:
                     status = f.read().strip()
-                if status in ("connected"):
+
+                if status == "connected":
+                    resolution = None
+                    if os.path.exists(modes_file):
+                        try:
+                            with open(modes_file, "r") as mf:
+                                # First mode is usually current/active
+                                first_line = mf.readline().strip()
+                                if first_line:
+                                    resolution = first_line
+                        except Exception:
+                            pass
+
                     outputs.append({
                         "name": entry,
-                        "status": status  # "connected" or "disconnected"
+                        "status": status,
+                        "resolution": resolution
                     })
+    print(LOG_PREFIX, "Detected displays:", outputs)
     return outputs
 
 
@@ -356,27 +377,40 @@ def main():
     global LOCAL_CFG, CLIENT_ID, SERVER_URL, DISPLAY_PROCS
 
     LOCAL_CFG = ensure_displays_in_config()
+    print(LOG_PREFIX, "Local config loaded:", LOCAL_CFG)
     
     CLIENT_ID = LOCAL_CFG.get("client_id")
     SERVER_URL = LOCAL_CFG.get("server_url")
-    displays = LOCAL_CFG.get("displays", [0])
+    displays = LOCAL_CFG.get("displays")
+    
 
     if not CLIENT_ID or not SERVER_URL:
         safe_print("client_id or server_url not set in config/client.json — edit the file and restart.")
         sys.exit(1)
 
-    safe_print("Starting client", CLIENT_ID, "server", SERVER_URL, "displays", displays)
+    if not displays:
+        safe_print("No displays configured/found. Edit config/client.json to set 'displays' or connect HDMI monitor.")
+        sys.exit(1)
+
+    safe_print("Starting client", CLIENT_ID, "connecting to", SERVER_URL)
 
     # spawn display worker processes (one per display index)
     global DISPLAY_PROCS
     for d in displays:
         name = d["name"]
         p = start_display_worker_process(name)
+        if p:
+            DISPLAY_PROCS.append(p)
+
+    print(LOG_PREFIX, f"Spawned {len(DISPLAY_PROCS)} display worker processes.")
 
 
     # connect to socketio with reconnects
     # Make sure server_url uses http(s) and Socket.IO default path
     try:
+        print(LOG_PREFIX, "Connecting to server...")
+        print(LOG_PREFIX, "Connecting to server...")
+        print(LOG_PREFIX, "Connecting to server...")
         sio.connect(SERVER_URL)
     except Exception as e:
         safe_print("Initial connect failed:", e)
