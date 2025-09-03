@@ -360,7 +360,12 @@ def detect_display_outputs():
                                 # First mode is usually current/active
                                 first_line = mf.readline().strip()
                                 if first_line:
-                                    resolution = first_line
+                                    #2560x1440 to {"width": 2560, "height": 1440}
+                                    resolution = {}
+                                    parts = first_line.split('x')
+                                    if len(parts) == 2:
+                                        resolution["width"] = int(parts[0])
+                                        resolution["height"] = int(parts[1])
                         except Exception:
                             pass
 
