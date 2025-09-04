@@ -69,7 +69,7 @@ def ensure_displays_in_config(path="config/client.json"):
 
     detected = detect_display_outputs()
     if not detected:
-        detected = [0]  # fallback
+        detected = []  # fallback
     config["displays"] = detected
     save_local_config(config)
 
