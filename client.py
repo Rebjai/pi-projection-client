@@ -372,7 +372,8 @@ def detect_display_outputs():
                     outputs.append({
                         "name": entry,
                         "status": status,
-                        "resolution": resolution
+                        "resolution": resolution,
+                        "active": True
                     })
     print(LOG_PREFIX, "Detected displays:", outputs)
     return outputs
