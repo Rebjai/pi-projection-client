@@ -169,6 +169,18 @@ def on_show(payload):
     except Exception as e:
         safe_print("Error in SHOW:", e, traceback.format_exc())
 
+@sio.on("CONFIG")
+def on_config(data):
+    safe_print("CONFIG update received:", data)
+    if not isinstance(data, dict):
+        safe_print("Invalid CONFIG payload")
+        return
+    with config_lock:
+        cfg = LOCAL_CFG
+        cfg.update(data)
+        save_local_config(cfg)
+    safe_print("Local config updated with CONFIG payload")
+
 @sio.event
 def disconnect():
     safe_print("Disconnected from server")
