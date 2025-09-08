@@ -153,10 +153,10 @@ def connect():
 def on_registered(data):
     safe_print("Server registered response:", data)
 
-@sio.on("ASSIGN_TILES")
+@sio.on("FETCH_TILES")
 def on_assign_tiles(payload):
     try:
-        safe_print("ASSIGN_TILES received:", payload.get("image"), "tiles:", len(payload.get("tiles", [])))
+        safe_print("FETCH_TILES received:", payload.get("filename"))
         handle_assign_tiles(payload)
     except Exception as e:
         safe_print("Error in ASSIGN_TILES:", e, traceback.format_exc())
@@ -179,6 +179,7 @@ def on_config(data):
         cfg = LOCAL_CFG
         cfg.update(data)
         save_local_config(cfg)
+        LOCAL_CFG = cfg
     safe_print("Local config updated with CONFIG payload")
 
 @sio.event
@@ -190,91 +191,45 @@ def handle_assign_tiles(payload: Dict[str, Any]):
     """
     payload example:
     {
-      "image": "name.png",
-      "tiles": [
-         {"tile_index": 0, "url": "http://server/tiles/name/client_pi-01_tile_0.png", "hdmi_output": 1, "homography": [[...]]}
-         ...
-      ],
-      "frame_id": 1234
+      "filename": "name.png",
     }
+    fetch the file from server_url/tiles/safe_filename(filename)/cient_<client_id>_tile_<display_output>.png
+    and
+    save to TILES_DIR/filename
     """
-    print (LOG_PREFIX, "Handling ASSIGN_TILES payload")
-    image = payload.get("image")
-    tiles = payload.get("tiles", [])
-    if not image or not tiles:
-        safe_print("Empty assign payload")
+    print (LOG_PREFIX, "Handling ASSIGN_TILES payload", payload)
+    filename = payload.get("filename")
+    if not filename:
+        safe_print("No filename in ASSIGN_TILES payload")
         return
-
-    image_basename = os.path.splitext(os.path.basename(image))[0]
-    out_dir = os.path.join(TILES_DIR, image_basename)
-    os.makedirs(out_dir, exist_ok=True)
-
-    # Keep track of updated assignments
-    updated_assignments = []
-    updated_homographies = {}
-
-    for tile in tiles:
-        tidx = tile.get("tile_index")
-        url = tile.get("url")
-        hdmi_out = str(tile.get("hdmi_output"))
-        H = tile.get("homography", None)
-
-        if url is None:
-            safe_print("tile missing url:", tile)
+    safe_filename = get_safe_filename_without_extension(filename)
+    print(LOG_PREFIX, "Safe filename:", safe_filename)
+    cfg = LOCAL_CFG
+    if not cfg:
+        safe_print("Failed loading local config in ASSIGN_TILES")
+        return
+    for d in cfg.get("displays", []):
+        hdmi_output = d.get("name")
+        if not hdmi_output:
             continue
-
-        fname = os.path.basename(urlparse(url).path)
-        out_path = os.path.join(out_dir, fname)
+        url = f"{SERVER_URL}/tiles/{safe_filename}/client_{CLIENT_ID}_tile_{hdmi_output}.png"
+        local_folder = os.path.join(TILES_DIR, safe_filename)
+        os.makedirs(local_folder, exist_ok=True)
+        out_path = os.path.join(local_folder, f"{CLIENT_ID}_tile_{hdmi_output}.png")
         try:
             download_file(url, out_path)
+            #end and exit try
         except Exception as e:
-            safe_print("Failed download for tile", tidx, "url", url, "err", e)
+            safe_print("Failed downloading tile for hdmi", hdmi_output, "err", e)
             continue
 
-        # Save assignment entry
-        entry = {
-            "image": image,
-            "image_basename": image_basename,
-            "tile_index": tidx,
-            "hdmi_output": hdmi_out,
-            "file": out_path,
-            "downloaded_at": int(time.time())
-        }
-        updated_assignments.append(entry)
-
-        # Save homography mapping (if given) locally
-        if H is not None:
-            # ensure H is a 3x3 numeric list
-            try:
-                arr = np.array(H, dtype=float)
-                if arr.shape == (3,3):
-                    updated_homographies[str(tidx)] = H
-                else:
-                    safe_print("Invalid homography shape for tile", tidx)
-            except Exception:
-                safe_print("Invalid homography format for tile", tidx)
-
-    # Persist into local config safely
-    with config_lock:
-        cfg = LOCAL_CFG
-        # Replace assignments for this image's tile_indexes (we'll remove older assignments for same tile_index)
-        # Simpler: remove existing assignments that refer to the same tile_indexes of image_basename
-        existing = cfg.get("assignments", [])
-        to_remove = { (a.get("image_basename"), a.get("tile_index")) for a in updated_assignments }
-        new_existing = [a for a in existing if (a.get("image_basename"), a.get("tile_index")) not in to_remove]
-        new_existing.extend(updated_assignments)
-        cfg["assignments"] = new_existing
-        # Merge homographies
-        homos = cfg.get("homographies", {})
-        homos.update(updated_homographies)
-        cfg["homographies"] = homos
-        save_local_config(cfg)
-    safe_print("Assignments updated locally:", len(updated_assignments))
-    # Ack to server (optional)
-    try:
-        sio.emit("TILES_DOWNLOADED", {"client_id": CLIENT_ID, "image": image, "count": len(updated_assignments)})
-    except Exception:
-        pass
+def get_safe_filename_without_extension(fname: str) -> str:
+    # Remove any path components and keep only alphanum, dash, underscore, dot
+    image_basename = os.path.splitext(os.path.basename(fname))[0]
+    safe = image_basename.replace(" ", "_")
+    # Remove extension
+    return safe
+    
 
 def handle_show(payload: Dict[str, Any]):
     """
