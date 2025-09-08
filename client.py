@@ -176,7 +176,10 @@ def on_config(data):
         safe_print("Invalid CONFIG payload")
         return
     with config_lock:
-        cfg = LOCAL_CFG
+        cfg = load_local_config()
+        if not cfg:
+            safe_print("Failed loading local config in CONFIG")
+            return
         cfg.update(data)
         save_local_config(cfg)
         LOCAL_CFG = cfg
