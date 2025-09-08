@@ -185,6 +185,84 @@ def on_config(data):
         LOCAL_CFG = cfg
     safe_print("Local config updated with CONFIG payload")
 
+
+# presentation socket events
+@sio.on("START_PRESENTATION")
+def on_start_presentation(data):
+    """
+    Example payload:
+    {
+      "images": ["B10_EVAPO", "B11_TEMP", ...],
+    }
+    """
+    print("[client] START_PRESENTATION received", data)
+    images = data.get("images", [])
+    preload_ok = preload_images(images)
+
+    # Send ACK back to server
+    sio.emit("PRESENTATION_READY", {
+        "client_id": CLIENT_ID,
+        "ready": preload_ok
+    })
+
+
+@sio.on("SHOW_IMAGE")
+def on_show_image(data):
+    """
+    Example payload:
+    {
+      "image": "B10_EVAPO.png",
+    }
+    """
+    image = data.get("image")
+    if not image:
+        print("[client] SHOW_IMAGE missing image in payload", data)
+        return
+    print("[client] SHOW_IMAGE received:", image)
+    show_image(image)
+    
+
+@sio.on("RESUME_PRESENTATION")
+def on_resume_presentation(_):
+    print("[client] RESUME_PRESENTATION -> resuming slideshow")
+    # nothing to do, just listen for next SHOW_IMAGE
+    pass
+
+
+
+def preload_images(images):
+    """
+    Ensure all required tiles exist locally in TILES_DIR.
+    """
+    try:
+        for img in images:
+            safe_filename = get_safe_filename_without_extension(img)
+            cfg = LOCAL_CFG
+            if not cfg:
+                safe_print("Failed loading local config in PRELOAD_IMAGES")
+                return False
+            for d in cfg.get("displays", []):
+                hdmi_output = d.get("name")
+                if not hdmi_output:
+                    continue
+                url = f"{SERVER_URL}/tiles/{safe_filename}/client_{CLIENT_ID}_tile_{hdmi_output}.png"
+                local_folder = os.path.join(TILES_DIR, safe_filename)
+                os.makedirs(local_folder, exist_ok=True)
+                out_path = os.path.join(local_folder, f"{CLIENT_ID}_tile_{hdmi_output}.png")
+                if not os.path.exists(out_path):
+                    download_file(url, out_path)
+        return True
+    except Exception as e:
+        safe_print("Error in PRELOAD_IMAGES:", e, traceback.format_exc())
+        return False
+
+def show_image(image):
+    """
+    Stub: display image on screen, projector, etc.
+    For now just log.
+    """
+    print(f"[client] Displaying tiles for {image} for each display")
+
 @sio.event
 def disconnect():
     safe_print("Disconnected from server")
