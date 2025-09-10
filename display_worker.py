@@ -16,12 +16,41 @@ import pygame
 from PIL import Image
 import re
 from multiprocessing import Queue
+import numpy as np
+import cv2
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DISPLAY_OUT_DIR = os.path.join(BASE_DIR, "display_out")
 os.makedirs(DISPLAY_OUT_DIR, exist_ok=True)
 
+# ---------------- Homography Utilities ----------------
+
+def get_homography_warp(src_surface, dst_pts, output_size):
+    """
+    Apply homography warp to a Pygame surface.
+    src_surface: Pygame.Surface
+    dst_pts: 4 points [(x0,y0), (x1,y1), (x2,y2), (x3,y3)]
+    output_size: (width, height) of output surface
+    Returns a new Pygame surface with warped image.
+    """
+    # Convert surface to OpenCV image
+    src_array = pygame.surfarray.array3d(src_surface)
+    src_array = np.transpose(src_array, (1, 0, 2))  # Pygame -> OpenCV orientation
+
+    h_src, w_src = src_array.shape[:2]
+    src_pts = np.float32([[0,0], [w_src-1,0], [w_src-1,h_src-1], [0,h_src-1]])
+    dst_pts = np.float32(dst_pts)
+
+    H, _ = cv2.findHomography(src_pts, dst_pts)
+    warped = cv2.warpPerspective(src_array, H, output_size)
+
+    # Convert back to Pygame surface
+    warped = np.transpose(warped, (1,0,2))
+    warped_surf = pygame.surfarray.make_surface(warped)
+    return warped_surf
+
+#---------------- Main Display Worker ----------------
 
 def show_image_fullscreen(surface, screen):
     sw, sh = screen.get_size()
@@ -142,15 +171,29 @@ class DisplayWorker:
         print(f"[worker {self.drm_name}] preload done, {len(self.images)} images loaded")
         self.ack_queue.put({"type": "PRELOAD_DONE", "display": self.drm_name})
 
-    def show_image(self, img: str):
+    def show_image(self, img: str, homography_pts=None):
+        """
+        Show preloaded image fullscreen. If homography_pts is given (4 points),
+        the image will be warped to that quadrilateral.
+        """
         if img not in self.images:
             print(f"[worker {self.drm_name}] image {img} not preloaded")
             return
+
         surface = self.images[img]
+
+        sw, sh = self.screen.get_size()
+        if homography_pts and len(homography_pts) == 4:
+            warped_surf = get_homography_warp(surface, homography_pts, (sw, sh))
+            self.screen.blit(warped_surf, (0,0))
+        else:
+            # scale to fullscreen preserving aspect ratio
+            self._blit_fullscreen(surface)
+
+        pygame.display.flip()
         self.current_image = img
-        self._blit_fullscreen(surface)
-        self.ack_queue.put({"type": "SHOW_DONE", "display": self.drm_name, "image": img})
         print(f"[worker {self.drm_name}] showing image '{img}'")
+        self.ack_queue.put({"type": "SHOW_DONE", "display": self.drm_name, "image": img})
 
     def _blit_fullscreen(self, surface):
         if not self.screen:
@@ -175,6 +218,11 @@ class DisplayWorker:
         # Use SCALED + NOFRAME instead of FULLSCREEN to survive alt-tab
         self.screen = pygame.display.set_mode((sw, sh), pygame.FULLSCREEN)
         pygame.mouse.set_visible(False)
+        points = None # no homography by default
+        # points = [(100,100), (2400,50), (2500,1300), (50,1400)] # example homography points large
+        # points = [(0,0), (sw,0), (sw,sh), (0,sh)] # full screen quad
+        # points = [(100,100), (sw-100,50), (sw-50,sh-50), (50,sh-100)] # inset quad
+        # points = [(50,50), (sw-50,50), (sw-50,sh-50), (50,sh-50)] # inset quad
 
         running = True
         while running:
@@ -192,7 +240,7 @@ class DisplayWorker:
                 if ctype == "PRELOAD_IMAGES":
                     self.preload_images(cmd.get("images", []))
                 elif ctype == "SHOW_IMAGE":
-                    self.show_image(cmd.get("image"))
+                    self.show_image(cmd.get("image"), homography_pts=points)
                 elif ctype == "STOP":
                     running = False
             time.sleep(0.05)
