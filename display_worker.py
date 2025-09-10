@@ -110,9 +110,6 @@ def map_display_name_to_index(display_name: str) -> int:
 
 class DisplayWorker:
     def __init__(self, drm_name: str, cmd_queue: Queue, ack_queue: Queue, client_id: str):
-        """
-        assignments: list of display_outputs this worker is responsible for
-        """
         self.drm_name = drm_name
         self.cmd_queue = cmd_queue
         self.ack_queue = ack_queue
@@ -121,7 +118,7 @@ class DisplayWorker:
         self.current_image = None
         self.screen = None
         self.display_index = 0
-        
+
         drm_map = build_drm_xrandr_map()
         x_name = drm_map.get(drm_name, None)
         display_index = map_display_name_to_index(x_name) if x_name else 0
@@ -130,23 +127,18 @@ class DisplayWorker:
         os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(display_index)
 
     def preload_images(self, images: list[str]):
-        """ Preload images into memory from path: ./tiles/<img>/<client_id>_tile_<drm_name>.png
-        for fast display later.
-        """
         print(f"[worker {self.drm_name}] preloading images: {images}")
         TILES_DIR = os.path.join(BASE_DIR, "tiles")
         for img in images:
-            safe = img
-            local_folder = os.path.join(TILES_DIR, safe)
+            local_folder = os.path.join(TILES_DIR, img)
             out_path = os.path.join(local_folder, f"{self.client_id}_tile_{self.drm_name}.png")
             if os.path.exists(out_path):
                 try:
-                    surface = pygame.image.load(out_path)
+                    surface = pygame.image.load(out_path).convert()
                     self.images[img] = surface
-                    print(f"[worker {self.drm_name}] preloaded {out_path}")
+                    print(f"[worker {self.drm_name}] preloaded {out_path}, size={surface.get_size()}")
                 except Exception as e:
                     print(f"[worker {self.drm_name}] failed to load {out_path}: {e}")
-        # notify main process
         print(f"[worker {self.drm_name}] preload done, {len(self.images)} images loaded")
         self.ack_queue.put({"type": "PRELOAD_DONE", "display": self.drm_name})
 
@@ -155,43 +147,57 @@ class DisplayWorker:
             print(f"[worker {self.drm_name}] image {img} not preloaded")
             return
         surface = self.images[img]
-        screen = pygame.display.set_mode(surface.get_size(), pygame.NOFRAME)
-        screen.blit(surface, (0, 0))
+        self.current_image = img
+        self._blit_fullscreen(surface)
+        self.ack_queue.put({"type": "SHOW_DONE", "display": self.drm_name, "image": img})
+        print(f"[worker {self.drm_name}] showing image '{img}'")
+
+    def _blit_fullscreen(self, surface):
+        if not self.screen:
+            print(f"[worker {self.drm_name}] WARNING: screen not initialized")
+            return
+        sw, sh = self.screen.get_size()
+        iw, ih = surface.get_size()
+        scale = min(sw / iw, sh / ih)
+        nw, nh = int(iw * scale), int(ih * scale)
+        x = (sw - nw) // 2
+        y = (sh - nh) // 2
+        img_surf = pygame.transform.smoothscale(surface, (nw, nh))
+        self.screen.fill((0, 0, 0))
+        self.screen.blit(img_surf, (x, y))
         pygame.display.flip()
-        print(f"[worker {self.drm_name}] showing {img}")
+        print(f"[worker {self.drm_name}] displayed image at {nw}x{nh} on screen {sw}x{sh}")
 
     def run(self):
-        """
-        Non-blocking event loop to handle SHOW_IMAGE commands from client
-        """
         pygame.display.init()
-        pygame.event.set_blocked(None)
         info = pygame.display.Info()
-        screen_w, screen_h = info.current_w, info.current_h
-        screen = pygame.display.set_mode((screen_w, screen_h), pygame.FULLSCREEN)
+        sw, sh = info.current_w, info.current_h
+        # Use SCALED + NOFRAME instead of FULLSCREEN to survive alt-tab
+        self.screen = pygame.display.set_mode((sw, sh), pygame.FULLSCREEN)
         pygame.mouse.set_visible(False)
-        self.screen = screen
 
-        try:    
-            running = True
-            while running:
-                for event in pygame.event.get():
-                    if event.type == pygame.QUIT:
-                        return
-                while not self.cmd_queue.empty():
-                    cmd = self.cmd_queue.get()  # blocking wait
-                    ctype = cmd.get("type")
-                    if ctype == "PRELOAD_IMAGES":
-                        self.preload_images(cmd.get("images", []))
-                    elif ctype == "SHOW_IMAGE":
-                        self.show_image(cmd.get("image"))
-                    elif ctype == "STOP":
-                        break
-                time.sleep(0.1)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            pygame.quit()
+        running = True
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                elif event.type == pygame.VIDEOEXPOSE:
+                    # redraw current image if screen cleared
+                    if self.current_image:
+                        self._blit_fullscreen(self.images[self.current_image])
+
+            while not self.cmd_queue.empty():
+                cmd = self.cmd_queue.get()
+                ctype = cmd.get("type")
+                if ctype == "PRELOAD_IMAGES":
+                    self.preload_images(cmd.get("images", []))
+                elif ctype == "SHOW_IMAGE":
+                    self.show_image(cmd.get("image"))
+                elif ctype == "STOP":
+                    running = False
+            time.sleep(0.05)
+
+        pygame.quit()
 
 
 def run_display_worker(drm_name: str, cmd_queue: Queue, ack_queue: Queue, client_id: str):
