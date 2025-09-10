@@ -16,9 +16,11 @@ import shutil
 import requests
 import threading
 import traceback
-from multiprocessing import Process
+from multiprocessing import Process, Queue
 from urllib.parse import urlparse
 from typing import Dict, Any, List
+from display_worker import run_display_worker
+
 
 import numpy as np
 import cv2
@@ -36,6 +38,12 @@ LOG_PREFIX = "[client]"
 os.makedirs(CONFIG_DIR, exist_ok=True)
 os.makedirs(TILES_DIR, exist_ok=True)
 os.makedirs(DISPLAY_OUT_DIR, exist_ok=True)
+
+# Display workers processes
+# Key: drm_name, Value: (Process, Queue)
+DISPLAY_PROCS = {}
+CMD_QUEUES = {}
+ACK_QUEUE = Queue()
 
 # --- Helpers: local config ---
 def create_template_config(path):
@@ -82,10 +90,16 @@ def start_display_worker_process(drm_name: str) -> Process:
     if not os.path.exists(worker_py):
         print(LOG_PREFIX, "display_worker.py not found; create it in same folder as client.py")
         return None
-    proc = Process(target=_run_display_worker_subprocess, args=(drm_name,))
-    proc.daemon = True
+    cmd_queue = Queue()
+    proc = Process(
+        target=run_display_worker,
+        args=(drm_name, cmd_queue, ACK_QUEUE, CLIENT_ID),
+        daemon=True
+    )
     proc.start()
-    print(LOG_PREFIX, f"Spawned display worker for DRM display {drm_name} pid={proc.pid}")
+    DISPLAY_PROCS[drm_name] = proc
+    CMD_QUEUES[drm_name] = cmd_queue
+    print(LOG_PREFIX, f"Started display worker for {drm_name} (PID {proc.pid})")
     return proc
 
 def _run_display_worker_subprocess(drm_name: str):
@@ -109,7 +123,6 @@ sio = socketio.Client(reconnection=True, logger=False, engineio_logger=False)
 LOCAL_CFG: Dict[str, Any] = {}
 CLIENT_ID = None
 SERVER_URL = None
-DISPLAY_PROCS: List[Process] = []
 
 # Lock to avoid concurrent write to config
 config_lock = threading.Lock()
@@ -197,7 +210,27 @@ def on_start_presentation(data):
     """
     print("[client] START_PRESENTATION received", data)
     images = data.get("images", [])
-    preload_ok = preload_images(images)
+    preloaded_images = preload_images(images)
+    # send preload command to each worker
+    print(f"[client] Sending PRELOAD_IMAGES to {len(CMD_QUEUES)} display workers")
+    for drm_name, cmd_queue in CMD_QUEUES.items():
+        print(f"[client] Sending PRELOAD_IMAGES to {drm_name}")
+        cmd_queue.put({"type":"PRELOAD_IMAGES",
+                       "images": preloaded_images if preloaded_images else []
+                      }
+        )
+
+
+    # wait for ACKs
+    expected = set(CMD_QUEUES.keys())
+    ready = set()
+    while ready != expected:
+        ack = ACK_QUEUE.get()
+        if ack.get("type") == "PRELOAD_DONE":
+            ready.add(ack["display"])
+            print(f"[client] {ack['display']} ready")
+    preload_ok = (preloaded_images is not False) and (len(ready) == len(expected))
+    print(f"[client] All displays ready: {preload_ok}")
 
     # Send ACK back to server
     sio.emit("PRESENTATION_READY", {
@@ -219,7 +252,8 @@ def on_show_image(data):
         print("[client] SHOW_IMAGE missing image in payload", data)
         return
     print("[client] SHOW_IMAGE received:", image)
-    show_image(image)
+    img = get_safe_filename_without_extension(image)
+    show_image(img)
     
 
 @sio.on("RESUME_PRESENTATION")
@@ -235,6 +269,8 @@ def preload_images(images):
     Ensure all required tiles exist locally in TILES_DIR.
     """
     try:
+        print(f"[client] Preloadiiiiiiiiiiiiiiiiiiiiiiiiiing images: {images}")
+        loaded_image_list = []
         for img in images:
             safe_filename = get_safe_filename_without_extension(img)
             cfg = LOCAL_CFG
@@ -250,18 +286,27 @@ def preload_images(images):
                 os.makedirs(local_folder, exist_ok=True)
                 out_path = os.path.join(local_folder, f"{CLIENT_ID}_tile_{hdmi_output}.png")
                 if not os.path.exists(out_path):
+                    print(f"[client] Downloading tile for {hdmi_output} from {url}")
                     download_file(url, out_path)
-        return True
+            loaded_image_list.append(safe_filename)
+        print(f"[client] Preloaded images: {loaded_image_list}")
+        return loaded_image_list
     except Exception as e:
         safe_print("Error in PRELOAD_IMAGES:", e, traceback.format_exc())
         return False
 
 def show_image(image):
     """
-    Stub: display image on screen, projector, etc.
-    For now just log.
+    Notify each display worker to show the given image (by base name).
     """
     print(f"[client] Displaying tiles for {image} for each display")
+    for drm_name, cmd_queue in CMD_QUEUES.items():
+        cmd_queue.put(
+            {"type":"SHOW_IMAGE",
+            "image": image
+            }
+)
+
 
 @sio.event
 def disconnect():
@@ -449,12 +494,9 @@ def main():
     safe_print("Starting client", CLIENT_ID, "connecting to", SERVER_URL)
 
     # spawn display worker processes (one per display index)
-    global DISPLAY_PROCS
     for d in displays:
         name = d["name"]
         p = start_display_worker_process(name)
-        if p:
-            DISPLAY_PROCS.append(p)
 
     print(LOG_PREFIX, f"Spawned {len(DISPLAY_PROCS)} display worker processes.")
 

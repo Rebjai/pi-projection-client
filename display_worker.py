@@ -15,6 +15,7 @@ import subprocess
 import pygame
 from PIL import Image
 import re
+from multiprocessing import Queue
 
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -23,15 +24,12 @@ os.makedirs(DISPLAY_OUT_DIR, exist_ok=True)
 
 
 def show_image_fullscreen(surface, screen):
-    """Blit surface to screen scaled to screen size and flip."""
     sw, sh = screen.get_size()
     img_surf = pygame.transform.smoothscale(surface, (sw, sh))
     screen.blit(img_surf, (0, 0))
     pygame.display.flip()
 
-
 def load_image_as_surface(path):
-    """Load image via PIL then convert to pygame surface (RGB)."""
     pil = Image.open(path).convert("RGB")
     mode = pil.mode
     size = pil.size
@@ -110,50 +108,92 @@ def map_display_name_to_index(display_name: str) -> int:
     return 0
 
 
-def main(display_name: str):
-    """
-    Monitor DISPLAY_OUT_DIR/output_<display_name>.png and show fullscreen on given display.
-    """
-    print(f"[display_worker] Starting for display '{display_name}'")
-    drm_map = build_drm_xrandr_map()
-    x_name = drm_map.get(display_name, None)
-    display_index = map_display_name_to_index(x_name) if x_name else 0
-    os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(display_index)
+class DisplayWorker:
+    def __init__(self, drm_name: str, cmd_queue: Queue, ack_queue: Queue, client_id: str):
+        """
+        assignments: list of display_outputs this worker is responsible for
+        """
+        self.drm_name = drm_name
+        self.cmd_queue = cmd_queue
+        self.ack_queue = ack_queue
+        self.client_id = client_id
+        self.images = {}  # key: img_base, value: pygame.Surface
+        self.current_image = None
+        self.screen = None
+        self.display_index = 0
+        
+        drm_map = build_drm_xrandr_map()
+        x_name = drm_map.get(drm_name, None)
+        display_index = map_display_name_to_index(x_name) if x_name else 0
+        self.display_index = display_index
+        print(f"[{self.drm_name}] mapped to SDL display index {display_index}")
+        os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(display_index)
 
-    # Init pygame video only
-    pygame.display.init()
-    pygame.event.set_blocked(None)
-    info = pygame.display.Info()
-    screen_w, screen_h = info.current_w, info.current_h
-    screen = pygame.display.set_mode((screen_w, screen_h), pygame.FULLSCREEN)
-    pygame.mouse.set_visible(False)
+    def preload_images(self, images: list[str]):
+        """ Preload images into memory from path: ./tiles/<img>/<client_id>_tile_<drm_name>.png
+        for fast display later.
+        """
+        print(f"[worker {self.drm_name}] preloading images: {images}")
+        TILES_DIR = os.path.join(BASE_DIR, "tiles")
+        for img in images:
+            safe = img
+            local_folder = os.path.join(TILES_DIR, safe)
+            out_path = os.path.join(local_folder, f"{self.client_id}_tile_{self.drm_name}.png")
+            if os.path.exists(out_path):
+                try:
+                    surface = pygame.image.load(out_path)
+                    self.images[img] = surface
+                    print(f"[worker {self.drm_name}] preloaded {out_path}")
+                except Exception as e:
+                    print(f"[worker {self.drm_name}] failed to load {out_path}: {e}")
+        # notify main process
+        print(f"[worker {self.drm_name}] preload done, {len(self.images)} images loaded")
+        self.ack_queue.put({"type": "PRELOAD_DONE", "display": self.drm_name})
 
-    target_fname = os.path.join(DISPLAY_OUT_DIR, f"output_{display_name}.png")
-    last_mtime = 0
+    def show_image(self, img: str):
+        if img not in self.images:
+            print(f"[worker {self.drm_name}] image {img} not preloaded")
+            return
+        surface = self.images[img]
+        screen = pygame.display.set_mode(surface.get_size(), pygame.NOFRAME)
+        screen.blit(surface, (0, 0))
+        pygame.display.flip()
+        print(f"[worker {self.drm_name}] showing {img}")
 
-    try:
-        while True:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    return
-            if os.path.exists(target_fname):
-                mtime = os.path.getmtime(target_fname)
-                if mtime != last_mtime:
-                    try:
-                        surf = load_image_as_surface(target_fname)
-                        show_image_fullscreen(surf, screen)
-                        last_mtime = mtime
-                    except Exception as e:
-                        print("[display_worker] failed to load/show", target_fname, e)
-            time.sleep(0.25)
-    except KeyboardInterrupt:
-        pass
-    finally:
-        pygame.quit()
+    def run(self):
+        """
+        Non-blocking event loop to handle SHOW_IMAGE commands from client
+        """
+        pygame.display.init()
+        pygame.event.set_blocked(None)
+        info = pygame.display.Info()
+        screen_w, screen_h = info.current_w, info.current_h
+        screen = pygame.display.set_mode((screen_w, screen_h), pygame.FULLSCREEN)
+        pygame.mouse.set_visible(False)
+        self.screen = screen
+
+        try:    
+            running = True
+            while running:
+                for event in pygame.event.get():
+                    if event.type == pygame.QUIT:
+                        return
+                while not self.cmd_queue.empty():
+                    cmd = self.cmd_queue.get()  # blocking wait
+                    ctype = cmd.get("type")
+                    if ctype == "PRELOAD_IMAGES":
+                        self.preload_images(cmd.get("images", []))
+                    elif ctype == "SHOW_IMAGE":
+                        self.show_image(cmd.get("image"))
+                    elif ctype == "STOP":
+                        break
+                time.sleep(0.1)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            pygame.quit()
 
 
-if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python display_worker.py <display_name>")
-        sys.exit(1)
-    main(str(sys.argv[1]))
+def run_display_worker(drm_name: str, cmd_queue: Queue, ack_queue: Queue, client_id: str):
+    worker = DisplayWorker(drm_name, cmd_queue, ack_queue, client_id)
+    worker.run()
