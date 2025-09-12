@@ -87,22 +87,21 @@ def build_drm_xrandr_map():
     return mapping
 
 def get_xrandr_monitors():
-    """Return {name: (w, h, x, y)} from xrandr --listmonitors."""
+    """Return {name: (w,h,x,y)} for each monitor from xrandr --listmonitors."""
     monitors = {}
     try:
-        output = subprocess.check_output(["xrandr", "--listmonitors"], text=True).splitlines()
-        for line in output[1:]:  # skip "Monitors: N"
+        out = subprocess.check_output(["xrandr", "--listmonitors"], text=True).splitlines()
+        for line in out[1:]:
             parts = line.split()
             if len(parts) >= 4:
-                # format: " 0: +HDMI-1 1920/477x1080/268+0+0  HDMI-1"
-                geom = parts[2]  # e.g. 1920/477x1080/268+0+0
-                res_part, pos_part = geom.split("+", 1)
-                w, h = [int(x.split("/")[0]) for x in res_part.split("x")]
-                x, y = [int(v) for v in pos_part.split("+")]
                 name = parts[-1]
-                monitors[name] = (w, h, x, y)
+                res_off = parts[2]  # e.g. 1920/508x1080/286+0+0
+                m = re.match(r"(\d+)/\d+x(\d+)/\d+\+(\d+)\+(\d+)", res_off)
+                if m:
+                    w, h, x, y = map(int, m.groups())
+                    monitors[name] = (w, h, x, y)
     except Exception as e:
-        print(f"[display_worker] Failed to get xrandr monitors: {e}")
+        print(f"[mapper] failed to run xrandr: {e}")
     return monitors
 
 def get_sdl_monitors():
@@ -120,60 +119,57 @@ def get_sdl_monitors():
     return infos
 
 
-def map_display_name_to_index(drm_name: str) -> int:
-    import subprocess, pygame, re
-
-    # Get xrandr monitor list
-    try:
-        xr_out = subprocess.check_output(["xrandr", "--listmonitors"], text=True).splitlines()
-        xr_monitors = {}
-        for line in xr_out[1:]:
-            parts = line.split()
-            if len(parts) >= 4:
-                name = parts[-1]
-                res_off = parts[2]
-                m = re.match(r"(\d+)/\d+x(\d+)/\d+\+(\d+)\+(\d+)", res_off)
-                if m:
-                    w, h, x, y = map(int, m.groups())
-                    xr_monitors[name] = (w, h, x, y)
-    except Exception as e:
-        print(f"[mapper] failed xrandr: {e}")
-        xr_monitors = {}
+def map_display_name_to_index(display_name: str) -> int:
+    """
+    Map a DRM/xrandr display name (e.g., HDMI-1) to SDL display index
+    by comparing resolution + position (bounds).
+    """
+    xr_monitors = get_xrandr_monitors()
+    target = xr_monitors.get(display_name)
+    if not target:
+        print(f"[mapper] WARNING: no xrandr info for {display_name}, defaulting to 0")
+        return 0
 
     pygame.display.init()
     num_displays = pygame.display.get_num_video_displays()
-    import pygame._sdl2.video as sdl2video
-    mapping = {}
-    for i in range(num_displays):
-        bounds = sdl2video.get_display_bounds(i)  # (x, y, w, h)
-        for name, (w, h, x, y) in xr_monitors.items():
-            if (bounds[2], bounds[3], bounds[0], bounds[1]) == (w, h, x, y):
-                mapping[name] = i
 
-    print(f"[mapper] built map: {mapping}")
-    return mapping.get(drm_name, 0)
+    for i in range(num_displays):
+        if HAS_SDL2_VIDEO:
+            x, y, w, h = sdl2video.get_display_bounds(i)
+        else:
+            # Fallback: only resolution available, no offset
+            w, h = pygame.display.get_desktop_sizes()[i]
+            x, y = 0, 0
+
+        if (w, h, x, y) == target:
+            print(f"[mapper] matched {display_name} → SDL {i} ({w}x{h} at {x},{y})")
+            return i
+
+    # fallback
+    print(f"[mapper] WARNING: no SDL match for {display_name}, defaulting to 0")
+    return 0
 
 
 
 
 class DisplayWorker:
-    def __init__(self, drm_name: str, cmd_queue: Queue, ack_queue: Queue, client_id: str):
+    def __init__(self, drm_name, cmd_queue, ack_queue, client_id):
         self.drm_name = drm_name
         self.cmd_queue = cmd_queue
         self.ack_queue = ack_queue
         self.client_id = client_id
-        self.images = {}  # key: img_base, value: pygame.Surface
+        self.images = {}  # preloaded images
         self.current_image = None
         self.screen = None
-        self.display_index = 0
+        self.pygame = None
 
-        drm_map = build_drm_xrandr_map()
-        x_name = drm_map.get(drm_name, None)
-        display_index = map_display_name_to_index(x_name) if x_name else 0
+        display_index = map_display_name_to_index(drm_name)
         self.display_index = display_index
-        print(f"[{self.drm_name}] mapped to SDL display index {display_index}")
         os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(display_index)
-        print(f"[{self.drm_name}] using SDL_VIDEO_FULLSCREEN_DISPLAY={os.environ['SDL_VIDEO_FULLSCREEN_DISPLAY']}")
+
+        print(f"[{self.drm_name}] mapped to SDL display index {display_index}")
+        print(f"[{self.drm_name}] using SDL_VIDEO_FULLSCREEN_DISPLAY={display_index}")
+
         import pygame
         self.pygame = pygame
         pygame.init()
