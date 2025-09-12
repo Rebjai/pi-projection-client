@@ -132,30 +132,18 @@ def get_xrandr_monitors():
 
 
 def map_display_name_to_index(display_name: str) -> int:
-    """
-    Try to resolve xrandr display name (HDMI-1, DP-2, etc.)
-    to SDL display index by matching resolution.
-    """
     monitors = get_xrandr_monitors()
     print(f"[display_worker] xrandr monitors: {monitors}")
     if display_name not in monitors:
-        print(f"[display_worker] WARNING: display '{display_name}' not found in xrandr, defaulting to 0")
+        print(f"[display_worker] WARNING: display '{display_name}' not found, defaulting to 0")
         return 0
 
-    target_res = monitors[display_name]
+    # Create a stable ordering of displays (by name)
+    sorted_names = sorted(monitors.keys())
+    display_index = sorted_names.index(display_name)
+    print(f"[display_worker] mapped {display_name} -> SDL index {display_index}")
+    return display_index
 
-    pygame.display.init()
-    num_displays = pygame.display.get_num_displays()
-    desktop_sizes = pygame.display.get_desktop_sizes()
-
-    # Try to match resolution
-    for i, (w, h) in enumerate(desktop_sizes):
-        if (w, h) == target_res:
-            return i
-
-    # fallback: first display
-    print(f"[display_worker] WARNING: no resolution match for {display_name}, defaulting to 0")
-    return 0
 
 
 class DisplayWorker:
@@ -176,6 +164,9 @@ class DisplayWorker:
         self.display_index = display_index
         print(f"[{self.drm_name}] mapped to SDL display index {display_index}")
         os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(display_index)
+        self.pygame = pygame
+        pygame.init()
+        pygame.display.init()
 
     def preload_images(self, images: list[str]):
         print(f"[worker {self.drm_name}] preloading images: {images}")
