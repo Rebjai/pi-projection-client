@@ -164,6 +164,7 @@ class DisplayWorker:
         self.display_index = display_index
         print(f"[{self.drm_name}] mapped to SDL display index {display_index}")
         os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(display_index)
+        print(f"[{self.drm_name}] set SDL_VIDEO_FULLSCREEN_DISPLAY={os.environ['SDL_VIDEO_FULLSCREEN_DISPLAY']}")
         self.pygame = pygame
         pygame.init()
         pygame.display.init()
