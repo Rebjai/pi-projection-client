@@ -233,6 +233,11 @@ class DisplayWorker:
         print(f"[worker {self.drm_name}] pygame display info: {info}")
         sw, sh = info.current_w, info.current_h
         # Use SCALED + NOFRAME instead of FULLSCREEN to survive alt-tab
+        print("num displays:", self.pygame.display.get_num_displays())
+        for i in range(self.pygame.display.get_num_displays()):
+            size = self.pygame.display.get_desktop_sizes()[i]
+            print(f"display {i}: {size}")
+
         self.screen = self.pygame.display.set_mode((sw, sh), self.pygame.FULLSCREEN)
         self.pygame.mouse.set_visible(False)
         points = None # no homography by default
