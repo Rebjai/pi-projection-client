@@ -120,31 +120,39 @@ def get_sdl_monitors():
     return infos
 
 
-def map_display_name_to_index(display_name: str) -> int:
-    monitors = get_xrandr_monitors()
-    if display_name not in monitors:
-        print(f"[display_worker] WARNING: {display_name} not found, defaulting to 0")
-        return 0
+def map_display_name_to_index(drm_name: str) -> int:
+    import subprocess, pygame, re
 
-    target = monitors[display_name]  # (w,h,x,y)
+    # Get xrandr monitor list
+    try:
+        xr_out = subprocess.check_output(["xrandr", "--listmonitors"], text=True).splitlines()
+        xr_monitors = {}
+        for line in xr_out[1:]:
+            parts = line.split()
+            if len(parts) >= 4:
+                name = parts[-1]
+                res_off = parts[2]
+                m = re.match(r"(\d+)/\d+x(\d+)/\d+\+(\d+)\+(\d+)", res_off)
+                if m:
+                    w, h, x, y = map(int, m.groups())
+                    xr_monitors[name] = (w, h, x, y)
+    except Exception as e:
+        print(f"[mapper] failed xrandr: {e}")
+        xr_monitors = {}
 
-    sdl_displays = []
-    for i in range(pygame.display.get_num_video_displays()):
-        rect = pygame._sdl2.video.get_display_bounds(i)  # (x,y,w,h)
-        sdl_displays.append((i, rect))
+    pygame.display.init()
+    num_displays = pygame.display.get_num_video_displays()
+    import pygame._sdl2.video as sdl2video
+    mapping = {}
+    for i in range(num_displays):
+        bounds = sdl2video.get_display_bounds(i)  # (x, y, w, h)
+        for name, (w, h, x, y) in xr_monitors.items():
+            if (bounds[2], bounds[3], bounds[0], bounds[1]) == (w, h, x, y):
+                mapping[name] = i
 
-    # Match by resolution + position
-    for i, (x, y, w, h) in sdl_displays:
-        if (w, h, x, y) == target:
-            return i
+    print(f"[mapper] built map: {mapping}")
+    return mapping.get(drm_name, 0)
 
-    # fallback: resolution only
-    for i, (x, y, w, h) in sdl_displays:
-        if (w, h) == target[:2]:
-            return i
-
-    print(f"[display_worker] WARNING: no SDL match for {display_name}, defaulting to 0")
-    return 0
 
 
 
