@@ -88,53 +88,65 @@ def build_drm_xrandr_map():
     return mapping
 
 def get_xrandr_monitors():
-    """Parse xrandr --listmonitors and return {name: (w,h)} mapping."""
+    """Return {name: (w, h, x, y)} from xrandr --listmonitors."""
     monitors = {}
     try:
-        output = subprocess.check_output(["xrandr", "--listmonitors"]).decode().splitlines()
+        output = subprocess.check_output(["xrandr", "--listmonitors"], text=True).splitlines()
         for line in output[1:]:  # skip "Monitors: N"
             parts = line.split()
             if len(parts) >= 4:
                 # format: " 0: +HDMI-1 1920/477x1080/268+0+0  HDMI-1"
-                res = parts[2].split("x")
-                if len(res) == 2:
-                    try:
-                        w = int(res[0].split("/")[0])
-                        h = int(res[1].split("/")[0])
-                        name = parts[-1]
-                        monitors[name] = (w, h)
-                    except ValueError:
-                        pass
+                geom = parts[2]  # e.g. 1920/477x1080/268+0+0
+                res_part, pos_part = geom.split("+", 1)
+                w, h = [int(x.split("/")[0]) for x in res_part.split("x")]
+                x, y = [int(v) for v in pos_part.split("+")]
+                name = parts[-1]
+                monitors[name] = (w, h, x, y)
     except Exception as e:
         print(f"[display_worker] Failed to get xrandr monitors: {e}")
     return monitors
 
+def get_sdl_monitors():
+    """Return [(w, h, x, y), ...] for each SDL display index."""
+    pygame.display.init()
+    num = pygame.display.get_num_video_displays()
+    infos = []
+    for i in range(num):
+        # Requires pygame 2.1+ for get_desktop_sizes / get_window_position
+        w, h = pygame.display.get_desktop_sizes()[i]
+        # SDL2 doesn’t expose per-display offsets via pygame API,
+        # but you can get it via SDL_VIDEODRIVER or ctypes if needed.
+        # For now, fallback to (0,0).
+        infos.append((w, h, 0, 0))
+    return infos
+
 
 def map_display_name_to_index(display_name: str) -> int:
-    """
-    Try to resolve xrandr display name (HDMI-1, DP-2, etc.)
-    to SDL display index by matching resolution.
-    """
     monitors = get_xrandr_monitors()
-    print(f"[display_worker] xrandr monitors: {monitors}")
     if display_name not in monitors:
-        print(f"[display_worker] WARNING: display '{display_name}' not found in xrandr, defaulting to 0")
+        print(f"[display_worker] WARNING: {display_name} not found, defaulting to 0")
         return 0
 
-    target_res = monitors[display_name]
+    target = monitors[display_name]  # (w,h,x,y)
 
-    pygame.display.init()
-    num_displays = pygame.display.get_num_displays()
-    desktop_sizes = pygame.display.get_desktop_sizes()
+    sdl_displays = []
+    for i in range(pygame.display.get_num_video_displays()):
+        rect = pygame._sdl2.video.get_display_bounds(i)  # (x,y,w,h)
+        sdl_displays.append((i, rect))
 
-    # Try to match resolution
-    for i, (w, h) in enumerate(desktop_sizes):
-        if (w, h) == target_res:
+    # Match by resolution + position
+    for i, (x, y, w, h) in sdl_displays:
+        if (w, h, x, y) == target:
             return i
 
-    # fallback: first display
-    print(f"[display_worker] WARNING: no resolution match for {display_name}, defaulting to 0")
+    # fallback: resolution only
+    for i, (x, y, w, h) in sdl_displays:
+        if (w, h) == target[:2]:
+            return i
+
+    print(f"[display_worker] WARNING: no SDL match for {display_name}, defaulting to 0")
     return 0
+
 
 
 class DisplayWorker:
