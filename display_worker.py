@@ -163,7 +163,13 @@ class DisplayWorker:
         self.screen = None
         self.pygame = None
 
+        drm_map = build_drm_xrandr_map()
         display_index = map_display_name_to_index(drm_name)
+        x_name = drm_map.get(drm_name, None)
+        if x_name:
+            display_index = map_display_name_to_index(x_name)
+        else:
+            display_index = 0
         self.display_index = display_index
         os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(display_index)
 
