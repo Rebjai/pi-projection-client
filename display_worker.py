@@ -12,6 +12,7 @@ import os
 import sys
 import time
 import subprocess
+import pygame
 from PIL import Image
 import re
 from multiprocessing import Queue
@@ -64,124 +65,117 @@ def load_image_as_surface(path):
     data = pil.tobytes()
     return pygame.image.fromstring(data, size, mode)
 
+def get_connected_drm_connectors():
+    """
+    Return a list of DRM connectors that are currently connected.
+    Looks in /sys/class/drm for card*-* entries.
+    """
+    connectors = []
+    try:
+        drm_path = "/sys/class/drm"
+        for entry in os.listdir(drm_path):
+            entry_path = os.path.join(drm_path, entry)
+            if os.path.isdir(entry_path):
+                status_file = os.path.join(entry_path, "status")
+                if os.path.exists(status_file):
+                    with open(status_file) as f:
+                        status = f.read().strip()
+                        if status == "connected":
+                            connectors.append(entry)
+    except Exception as e:
+        print(f"[mapper] Failed to list DRM connectors: {e}")
+    return connectors
+
+
 def build_drm_xrandr_map():
     """
-    Map DRM connector names (cardX-XXX) to Xrandr names (DP-1, HDMI-1, etc.)
+    Automatically map DRM connectors (card*-*) to xrandr names (HDMI-1, DP-1, etc.)
+    in order of connection.
     """
     mapping = {}
     try:
-        output = subprocess.check_output(["xrandr", "--verbose"], text=True)
-        current_x = None
-        for line in output.splitlines():
+        output = subprocess.check_output(["xrandr", "--verbose"], text=True).splitlines()
+        drm_connectors = get_connected_drm_connectors()
+        # Assign each connected xrandr output to a DRM connector
+        for line in output:
             line = line.strip()
-            # Xrandr display line
             m = re.match(r"^(\S+) connected", line)
-            if m:
-                current_x = m.group(1)
-            elif "Connector:" in line and current_x:
-                drm_name = line.split()[-1]
-                mapping[drm_name] = current_x
-                current_x = None
+            if m and drm_connectors:
+                drm_name = drm_connectors.pop(0)
+                x_name = m.group(1)
+                mapping[drm_name] = x_name
     except Exception as e:
-        print(f"[display_worker] Could not build DRM → Xrandr map: {e}")
+        print(f"[mapper] Failed to build DRM → Xrandr map: {e}")
     return mapping
 
 def get_xrandr_monitors():
-    """Return {name: (w,h,x,y)} for each monitor from xrandr --listmonitors."""
+    """Parse xrandr --listmonitors and return {name: (w,h)} mapping."""
     monitors = {}
     try:
-        out = subprocess.check_output(["xrandr", "--listmonitors"], text=True).splitlines()
-        for line in out[1:]:
+        output = subprocess.check_output(["xrandr", "--listmonitors"]).decode().splitlines()
+        for line in output[1:]:  # skip "Monitors: N"
             parts = line.split()
             if len(parts) >= 4:
-                name = parts[-1]
-                res_off = parts[2]  # e.g. 1920/508x1080/286+0+0
-                m = re.match(r"(\d+)/\d+x(\d+)/\d+\+(\d+)\+(\d+)", res_off)
-                if m:
-                    w, h, x, y = map(int, m.groups())
-                    monitors[name] = (w, h, x, y)
+                # format: " 0: +HDMI-1 1920/477x1080/268+0+0  HDMI-1"
+                res = parts[2].split("x")
+                if len(res) == 2:
+                    try:
+                        w = int(res[0].split("/")[0])
+                        h = int(res[1].split("/")[0])
+                        name = parts[-1]
+                        monitors[name] = (w, h)
+                    except ValueError:
+                        pass
     except Exception as e:
-        print(f"[mapper] failed to run xrandr: {e}")
+        print(f"[display_worker] Failed to get xrandr monitors: {e}")
     return monitors
-
-def get_sdl_monitors():
-    """Return [(w, h, x, y), ...] for each SDL display index."""
-    pygame.display.init()
-    num = pygame.display.get_num_video_displays()
-    infos = []
-    for i in range(num):
-        # Requires pygame 2.1+ for get_desktop_sizes / get_window_position
-        w, h = pygame.display.get_desktop_sizes()[i]
-        # SDL2 doesn’t expose per-display offsets via pygame API,
-        # but you can get it via SDL_VIDEODRIVER or ctypes if needed.
-        # For now, fallback to (0,0).
-        infos.append((w, h, 0, 0))
-    return infos
 
 
 def map_display_name_to_index(display_name: str) -> int:
     """
-    Map a DRM/xrandr display name (e.g., HDMI-1) to SDL display index
-    by comparing resolution + position (bounds).
+    Try to resolve xrandr display name (HDMI-1, DP-2, etc.)
+    to SDL display index by matching resolution.
     """
-    xr_monitors = get_xrandr_monitors()
-    target = xr_monitors.get(display_name)
-    if not target:
-        print(f"[mapper] WARNING: no xrandr info for {display_name}, defaulting to 0")
+    monitors = get_xrandr_monitors()
+    print(f"[display_worker] xrandr monitors: {monitors}")
+    if display_name not in monitors:
+        print(f"[display_worker] WARNING: display '{display_name}' not found in xrandr, defaulting to 0")
         return 0
 
+    target_res = monitors[display_name]
+
     pygame.display.init()
-    num_displays = pygame.display.get_num_video_displays()
+    num_displays = pygame.display.get_num_displays()
+    desktop_sizes = pygame.display.get_desktop_sizes()
 
-    for i in range(num_displays):
-        if HAS_SDL2_VIDEO:
-            x, y, w, h = sdl2video.get_display_bounds(i)
-        else:
-            # Fallback: only resolution available, no offset
-            w, h = pygame.display.get_desktop_sizes()[i]
-            x, y = 0, 0
-
-        if (w, h, x, y) == target:
-            print(f"[mapper] matched {display_name} → SDL {i} ({w}x{h} at {x},{y})")
+    # Try to match resolution
+    for i, (w, h) in enumerate(desktop_sizes):
+        if (w, h) == target_res:
             return i
 
-    # fallback
-    print(f"[mapper] WARNING: no SDL match for {display_name}, defaulting to 0")
+    # fallback: first display
+    print(f"[display_worker] WARNING: no resolution match for {display_name}, defaulting to 0")
     return 0
 
 
-
-
 class DisplayWorker:
-    def __init__(self, drm_name, cmd_queue, ack_queue, client_id):
+    def __init__(self, drm_name: str, cmd_queue: Queue, ack_queue: Queue, client_id: str):
         self.drm_name = drm_name
         self.cmd_queue = cmd_queue
         self.ack_queue = ack_queue
         self.client_id = client_id
-        self.images = {}  # preloaded images
+        self.images = {}  # key: img_base, value: pygame.Surface
         self.current_image = None
         self.screen = None
-        self.pygame = None
+        self.display_index = 0
 
         drm_map = build_drm_xrandr_map()
         print(f"[{self.drm_name}] DRM to Xrandr map: {drm_map}")
-        display_index = map_display_name_to_index(drm_name)
         x_name = drm_map.get(drm_name, None)
-        if x_name:
-            display_index = map_display_name_to_index(x_name)
-        else:
-            display_index = 0
+        display_index = map_display_name_to_index(x_name) if x_name else 0
         self.display_index = display_index
-        os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(display_index)
-
         print(f"[{self.drm_name}] mapped to SDL display index {display_index}")
-        print(f"[{self.drm_name}] using SDL_VIDEO_FULLSCREEN_DISPLAY={display_index}")
-
-        import pygame
-        self.pygame = pygame
-        pygame.init()
-        pygame.display.init()
-
+        os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(display_index)
 
     def preload_images(self, images: list[str]):
         print(f"[worker {self.drm_name}] preloading images: {images}")
@@ -191,7 +185,7 @@ class DisplayWorker:
             out_path = os.path.join(local_folder, f"{self.client_id}_tile_{self.drm_name}.png")
             if os.path.exists(out_path):
                 try:
-                    surface = self.pygame.image.load(out_path).convert()
+                    surface = pygame.image.load(out_path).convert()
                     self.images[img] = surface
                     print(f"[worker {self.drm_name}] preloaded {out_path}, size={surface.get_size()}")
                 except Exception as e:
@@ -218,7 +212,7 @@ class DisplayWorker:
             # scale to fullscreen preserving aspect ratio
             self._blit_fullscreen(surface)
 
-        self.pygame.display.flip()
+        pygame.display.flip()
         self.current_image = img
         print(f"[worker {self.drm_name}] showing image '{img}'")
         self.ack_queue.put({"type": "SHOW_DONE", "display": self.drm_name, "image": img})
@@ -233,24 +227,19 @@ class DisplayWorker:
         nw, nh = int(iw * scale), int(ih * scale)
         x = (sw - nw) // 2
         y = (sh - nh) // 2
-        img_surf = self.pygame.transform.smoothscale(surface, (nw, nh))
+        img_surf = pygame.transform.smoothscale(surface, (nw, nh))
         self.screen.fill((0, 0, 0))
         self.screen.blit(img_surf, (x, y))
-        self.pygame.display.flip()
+        pygame.display.flip()
         print(f"[worker {self.drm_name}] displayed image at {nw}x{nh} on screen {sw}x{sh}")
 
     def run(self):
-        info = self.pygame.display.Info()
-        print(f"[worker {self.drm_name}] pygame display info: {info}")
+        pygame.display.init()
+        info = pygame.display.Info()
         sw, sh = info.current_w, info.current_h
         # Use SCALED + NOFRAME instead of FULLSCREEN to survive alt-tab
-        print("num displays:", self.pygame.display.get_num_displays())
-        for i in range(self.pygame.display.get_num_displays()):
-            size = self.pygame.display.get_desktop_sizes()[i]
-            print(f"display {i}: {size}")
-
-        self.screen = self.pygame.display.set_mode((sw, sh), self.pygame.FULLSCREEN)
-        self.pygame.mouse.set_visible(False)
+        self.screen = pygame.display.set_mode((sw, sh), pygame.FULLSCREEN)
+        pygame.mouse.set_visible(False)
         points = None # no homography by default
         # points = [(100,100), (2400,50), (2500,1300), (50,1400)] # example homography points large
         # points = [(0,0), (sw,0), (sw,sh), (0,sh)] # full screen quad
@@ -259,10 +248,10 @@ class DisplayWorker:
 
         running = True
         while running:
-            for event in self.pygame.event.get():
-                if event.type == self.pygame.QUIT:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
                     running = False
-                elif event.type == self.pygame.VIDEOEXPOSE:
+                elif event.type == pygame.VIDEOEXPOSE:
                     # redraw current image if screen cleared
                     if self.current_image:
                         self._blit_fullscreen(self.images[self.current_image])
@@ -278,7 +267,7 @@ class DisplayWorker:
                     running = False
             time.sleep(0.05)
 
-        self.pygame.quit()
+        pygame.quit()
 
 
 def run_display_worker(drm_name: str, cmd_queue: Queue, ack_queue: Queue, client_id: str):
