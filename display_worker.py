@@ -229,7 +229,10 @@ class DisplayWorker:
         info = pygame.display.Info()
         sw, sh = info.current_w, info.current_h
         # Use SCALED + NOFRAME instead of FULLSCREEN to survive alt-tab
-        self.screen = pygame.display.set_mode((sw, sh), pygame.FULLSCREEN)
+        self.screen = pygame.display.set_mode(
+            (sw, sh),
+            pygame.SCALED | pygame.NOFRAME
+        )
         print(f"[{self.drm_name}] pygame screen size: {self.screen.get_size()}")
 
         pygame.mouse.set_visible(False)
