@@ -154,6 +154,7 @@ class DisplayWorker:
         self.display_index = display_index
         print(f"[{self.drm_name}] mapped to SDL display index {display_index}")
         os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(display_index)
+        print(f"[{self.drm_name}] using SDL_VIDEO_FULLSCREEN_DISPLAY={os.environ['SDL_VIDEO_FULLSCREEN_DISPLAY']}")
 
     def preload_images(self, images: list[str]):
         print(f"[worker {self.drm_name}] preloading images: {images}")
@@ -214,6 +215,7 @@ class DisplayWorker:
     def run(self):
         pygame.display.init()
         info = pygame.display.Info()
+        print(f"[worker {self.drm_name}] pygame display info: {info}")
         sw, sh = info.current_w, info.current_h
         # Use SCALED + NOFRAME instead of FULLSCREEN to survive alt-tab
         self.screen = pygame.display.set_mode((sw, sh), pygame.FULLSCREEN)
