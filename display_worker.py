@@ -230,6 +230,8 @@ class DisplayWorker:
         sw, sh = info.current_w, info.current_h
         # Use SCALED + NOFRAME instead of FULLSCREEN to survive alt-tab
         self.screen = pygame.display.set_mode((sw, sh), pygame.FULLSCREEN)
+        print(f"[{self.drm_name}] pygame screen size: {self.screen.get_size()}")
+
         pygame.mouse.set_visible(False)
         points = None # no homography by default
         # points = [(100,100), (2400,50), (2500,1300), (50,1400)] # example homography points large
