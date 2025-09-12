@@ -164,6 +164,7 @@ class DisplayWorker:
         self.pygame = None
 
         drm_map = build_drm_xrandr_map()
+        print(f"[{self.drm_name}] DRM to Xrandr map: {drm_map}")
         display_index = map_display_name_to_index(drm_name)
         x_name = drm_map.get(drm_name, None)
         if x_name:
