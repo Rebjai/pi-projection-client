@@ -12,7 +12,6 @@ import os
 import sys
 import time
 import subprocess
-import pygame
 from PIL import Image
 import re
 from multiprocessing import Queue
@@ -167,6 +166,8 @@ class DisplayWorker:
         print(f"[{self.drm_name}] mapped to SDL display index {display_index}")
         os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(display_index)
         print(f"[{self.drm_name}] using SDL_VIDEO_FULLSCREEN_DISPLAY={os.environ['SDL_VIDEO_FULLSCREEN_DISPLAY']}")
+        import pygame
+
 
     def preload_images(self, images: list[str]):
         print(f"[worker {self.drm_name}] preloading images: {images}")
