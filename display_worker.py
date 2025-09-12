@@ -167,6 +167,9 @@ class DisplayWorker:
         os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(display_index)
         print(f"[{self.drm_name}] using SDL_VIDEO_FULLSCREEN_DISPLAY={os.environ['SDL_VIDEO_FULLSCREEN_DISPLAY']}")
         import pygame
+        self.pygame = pygame
+        pygame.init()
+        pygame.display.init()
 
 
     def preload_images(self, images: list[str]):
@@ -177,7 +180,7 @@ class DisplayWorker:
             out_path = os.path.join(local_folder, f"{self.client_id}_tile_{self.drm_name}.png")
             if os.path.exists(out_path):
                 try:
-                    surface = pygame.image.load(out_path).convert()
+                    surface = self.pygame.image.load(out_path).convert()
                     self.images[img] = surface
                     print(f"[worker {self.drm_name}] preloaded {out_path}, size={surface.get_size()}")
                 except Exception as e:
@@ -204,7 +207,7 @@ class DisplayWorker:
             # scale to fullscreen preserving aspect ratio
             self._blit_fullscreen(surface)
 
-        pygame.display.flip()
+        self.pygame.display.flip()
         self.current_image = img
         print(f"[worker {self.drm_name}] showing image '{img}'")
         self.ack_queue.put({"type": "SHOW_DONE", "display": self.drm_name, "image": img})
@@ -219,20 +222,19 @@ class DisplayWorker:
         nw, nh = int(iw * scale), int(ih * scale)
         x = (sw - nw) // 2
         y = (sh - nh) // 2
-        img_surf = pygame.transform.smoothscale(surface, (nw, nh))
+        img_surf = self.pygame.transform.smoothscale(surface, (nw, nh))
         self.screen.fill((0, 0, 0))
         self.screen.blit(img_surf, (x, y))
-        pygame.display.flip()
+        self.pygame.display.flip()
         print(f"[worker {self.drm_name}] displayed image at {nw}x{nh} on screen {sw}x{sh}")
 
     def run(self):
-        pygame.display.init()
-        info = pygame.display.Info()
+        info = self.pygame.display.Info()
         print(f"[worker {self.drm_name}] pygame display info: {info}")
         sw, sh = info.current_w, info.current_h
         # Use SCALED + NOFRAME instead of FULLSCREEN to survive alt-tab
-        self.screen = pygame.display.set_mode((sw, sh), pygame.FULLSCREEN)
-        pygame.mouse.set_visible(False)
+        self.screen = self.pygame.display.set_mode((sw, sh), self.pygame.FULLSCREEN)
+        self.pygame.mouse.set_visible(False)
         points = None # no homography by default
         # points = [(100,100), (2400,50), (2500,1300), (50,1400)] # example homography points large
         # points = [(0,0), (sw,0), (sw,sh), (0,sh)] # full screen quad
@@ -241,10 +243,10 @@ class DisplayWorker:
 
         running = True
         while running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
+            for event in self.pygame.event.get():
+                if event.type == self.pygame.QUIT:
                     running = False
-                elif event.type == pygame.VIDEOEXPOSE:
+                elif event.type == self.pygame.VIDEOEXPOSE:
                     # redraw current image if screen cleared
                     if self.current_image:
                         self._blit_fullscreen(self.images[self.current_image])
@@ -260,7 +262,7 @@ class DisplayWorker:
                     running = False
             time.sleep(0.05)
 
-        pygame.quit()
+        self.pygame.quit()
 
 
 def run_display_worker(drm_name: str, cmd_queue: Queue, ack_queue: Queue, client_id: str):
