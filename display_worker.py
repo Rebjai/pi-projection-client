@@ -168,6 +168,7 @@ class DisplayWorker:
         self.pygame = pygame
         pygame.init()
         pygame.display.init()
+        print(f"[{self.drm_name}] pygame display initialized with {pygame.display.get_num_displays()} displays")
 
     def preload_images(self, images: list[str]):
         print(f"[worker {self.drm_name}] preloading images: {images}")
@@ -229,10 +230,10 @@ class DisplayWorker:
         pygame.display.init()
         info = pygame.display.Info()
         sw, sh = info.current_w, info.current_h
-        # Use SCALED + NOFRAME instead of FULLSCREEN to survive alt-tab
         self.screen = pygame.display.set_mode(
-            (sw, sh),
-            pygame.SCALED | pygame.NOFRAME
+            (0,0),
+            pygame.FULLSCREEN,
+            display=self.display_index
         )
         print(f"[{self.drm_name}] pygame screen size: {self.screen.get_size()}")
 
