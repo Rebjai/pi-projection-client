@@ -230,11 +230,19 @@ class DisplayWorker:
         pygame.display.init()
         info = pygame.display.Info()
         sw, sh = info.current_w, info.current_h
-        self.screen = pygame.display.set_mode(
-            (0,0),
-            pygame.FULLSCREEN,
-            display=self.display_index
-        )
+        if self.display_index == 0:
+            self.screen = pygame.display.set_mode(
+                (sw, sh),
+                pygame.FULLSCREEN,
+                display=self.display_index
+            )
+        else:
+            # For others, use a borderless window sized to the display
+            self.screen = pygame.display.set_mode(
+                (sw, sh),
+                pygame.NOFRAME,
+                display=self.display_index
+            )
         print(f"[{self.drm_name}] pygame screen size: {self.screen.get_size()}")
 
         pygame.mouse.set_visible(False)
