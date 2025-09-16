@@ -226,6 +226,9 @@ class DisplayWorker:
         print(f"[worker {self.drm_name}] displayed image at {nw}x{nh} on screen {sw}x{sh}")
 
     def run(self):
+        print(f"[{self.drm_name}] DisplayWorker starting on display index {self.display_index}")
+        # Set environment variable to select the display
+        os.environ["SDL_VIDEO_DRIVER"] = "x11"
         os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(self.display_index)
         print(f"[{self.drm_name}] set SDL_VIDEO_FULLSCREEN_DISPLAY={self.display_index}")
 
