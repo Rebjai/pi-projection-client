@@ -207,6 +207,14 @@ class DisplayWorker:
         print(f"[worker {self.drm_name}] showing image '{img}'")
         self.ack_queue.put({"type": "SHOW_DONE", "display": self.drm_name, "image": img})
 
+    def get_monitor_offsets(self):
+        """
+        Calculate the X offset for each display based on previous monitors.
+        """
+        sizes = pygame.display.get_desktop_sizes()
+        x_offset = sum(s[0] for s in sizes[:self.display_index])
+        return x_offset, 0
+
     def _blit_fullscreen(self, surface):
         if not self.screen:
             print(f"[worker {self.drm_name}] WARNING: screen not initialized")
