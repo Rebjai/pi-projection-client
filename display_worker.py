@@ -240,6 +240,7 @@ class DisplayWorker:
 
         # Query the resolution of the target display
         disp_bounds = pygame.display.get_desktop_sizes()[self.display_index]
+        print(f"[{self.drm_name}] display {self.display_index} bounds: {disp_bounds}")
         sw, sh = disp_bounds
         print(f"[{self.drm_name}] desktop size for index {self.display_index}: {sw}x{sh}")
 
