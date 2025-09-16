@@ -245,12 +245,19 @@ class DisplayWorker:
         print(f"[{self.drm_name}] desktop size for index {self.display_index}: {sw}x{sh}")
 
         # Open the window on that display
-        flags = pygame.NOFRAME
-        self.screen = pygame.display.set_mode(
-            (sw, sh),
-            flags,
-            display=self.display_index
-        )
+        if self.display_index == 0:
+            flags = pygame.FULLSCREEN
+        else:
+            flags = pygame.NOFRAME
+
+        # Create the window
+        self.screen = pygame.display.set_mode((sw, sh), flags, display=self.display_index)
+        print(f"[{self.drm_name}] initialized on display {self.display_index} -- size={self.screen.get_size()}, flags={flags}")
+
+        # Move window to correct monitor position (secondary displays)
+        if self.display_index > 0:
+            x, y = self.get_monitor_offsets()
+            pygame.display.set_window_position(x, y)
 
         print(
             f"[{self.drm_name}] initialized on display {self.display_index} "
