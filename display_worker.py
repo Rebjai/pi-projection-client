@@ -213,7 +213,7 @@ class DisplayWorker:
         """
         sizes = pygame.display.get_desktop_sizes()
         x_offset = sum(s[0] for s in sizes[:self.display_index])
-        return x_offset, 0
+        return x_offset-1, 0
 
     def _blit_fullscreen(self, surface):
         if not self.screen:
