@@ -258,6 +258,7 @@ class DisplayWorker:
         print(
             f"[{self.drm_name}] initialized on display {self.display_index} "
             f"-- pygame screen size: {self.screen.get_size()}"
+            f", flags={flags}"
         )
 
         pygame.mouse.set_visible(False)
