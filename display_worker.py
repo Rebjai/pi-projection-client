@@ -163,8 +163,7 @@ class DisplayWorker:
         display_index = map_display_name_to_index(x_name) if x_name else 0
         self.display_index = display_index
         print(f"[{self.drm_name}] mapped to SDL display index {display_index}")
-        os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(display_index)
-        print(f"[{self.drm_name}] set SDL_VIDEO_FULLSCREEN_DISPLAY={os.environ['SDL_VIDEO_FULLSCREEN_DISPLAY']}")
+        
         self.pygame = pygame
         print(f"[{self.drm_name}] pygame display initialized with {pygame.display.get_num_displays()} displays")
 
@@ -225,6 +224,8 @@ class DisplayWorker:
         print(f"[worker {self.drm_name}] displayed image at {nw}x{nh} on screen {sw}x{sh}")
 
     def run(self):
+        os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(self.display_index)
+        print(f"[{self.drm_name}] set SDL_VIDEO_FULLSCREEN_DISPLAY={os.environ['SDL_VIDEO_FULLSCREEN_DISPLAY']}")
         pygame.display.init()
         info = pygame.display.Info()
         sw, sh = info.current_w, info.current_h
@@ -241,7 +242,7 @@ class DisplayWorker:
                 pygame.NOFRAME,
                 display=self.display_index
             )
-        print(f"[{self.drm_name}] pygame screen size: {self.screen.get_size()}")
+        print(f"[{self.drm_name}] with index {self.display_index} initialized -- pygame screen size: {self.screen.get_size()}")
 
         pygame.mouse.set_visible(False)
         points = None # no homography by default
