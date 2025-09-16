@@ -248,7 +248,7 @@ class DisplayWorker:
         print(f"[{self.drm_name}] desktop size for index {self.display_index}: {sw}x{sh}")
 
         # Open the window on that display
-        flags = pygame.FULLSCREEN if self.display_index == 0 else pygame.NOFRAME
+        flags = pygame.NOFRAME
         self.screen = pygame.display.set_mode(
             (sw, sh),
             flags,
