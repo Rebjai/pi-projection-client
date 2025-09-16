@@ -23,6 +23,8 @@ import cv2
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DISPLAY_OUT_DIR = os.path.join(BASE_DIR, "display_out")
 os.makedirs(DISPLAY_OUT_DIR, exist_ok=True)
+os.environ["SDL_VIDEODRIVER"] = "x11"
+
 
 # ---------------- Homography Utilities ----------------
 
@@ -225,24 +227,34 @@ class DisplayWorker:
 
     def run(self):
         os.environ["SDL_VIDEO_FULLSCREEN_DISPLAY"] = str(self.display_index)
-        print(f"[{self.drm_name}] set SDL_VIDEO_FULLSCREEN_DISPLAY={os.environ['SDL_VIDEO_FULLSCREEN_DISPLAY']}")
+        print(f"[{self.drm_name}] set SDL_VIDEO_FULLSCREEN_DISPLAY={self.display_index}")
+
         pygame.display.init()
-        info = pygame.display.Info()
-        sw, sh = info.current_w, info.current_h
-        if self.display_index == 0:
-            self.screen = pygame.display.set_mode(
-                (sw, sh),
-                pygame.FULLSCREEN,
-                display=self.display_index
-            )
-        else:
-            # For others, use a borderless window sized to the display
-            self.screen = pygame.display.set_mode(
-                (sw, sh),
-                pygame.NOFRAME,
-                display=self.display_index
-            )
-        print(f"[{self.drm_name}] with index {self.display_index} initialized -- pygame screen size: {self.screen.get_size()}")
+
+        num_displays = pygame.display.get_num_displays()
+        print(f"[{self.drm_name}] pygame sees {num_displays} displays")
+
+        if self.display_index >= num_displays:
+            print(f"[{self.drm_name}] ERROR: display index {self.display_index} out of range!")
+            return
+
+        # Query the resolution of the target display
+        disp_bounds = pygame.display.get_desktop_sizes()[self.display_index]
+        sw, sh = disp_bounds
+        print(f"[{self.drm_name}] desktop size for index {self.display_index}: {sw}x{sh}")
+
+        # Open the window on that display
+        flags = pygame.FULLSCREEN if self.display_index == 0 else pygame.NOFRAME
+        self.screen = pygame.display.set_mode(
+            (sw, sh),
+            flags,
+            display=self.display_index
+        )
+
+        print(
+            f"[{self.drm_name}] initialized on display {self.display_index} "
+            f"-- pygame screen size: {self.screen.get_size()}"
+        )
 
         pygame.mouse.set_visible(False)
         points = None # no homography by default
