@@ -156,6 +156,7 @@ class DisplayWorker:
         self.current_image = None
         self.screen = None
         self.display_index = 0
+        self.points = None  # no homography by default
 
         drm_map = build_drm_xrandr_map()
         print(f"[{self.drm_name}] DRM to Xrandr map: {drm_map}")
@@ -166,6 +167,32 @@ class DisplayWorker:
         
         self.pygame = pygame
         print(f"[{self.drm_name}] pygame display initialized with {pygame.display.get_num_displays()} displays")
+
+    def set_points(self, points):
+        """ Set homography points for warping images.
+        scale normalized points [0..1] to screen size.
+        points:  points: [[0.3635831750541259, 0.17705501044122854], [0.7709439058282997, 0.10253079110435967], [0.7782326664186925, 0.8002758705145345], [0.379268278858621, 0.7869399019440089]]
+        """
+        if not points or len(points) != 4:
+            print(f"[worker {self.drm_name}] invalid homography points: {points}")
+            self.points = None
+            return
+        if not self.screen:
+            print(f"[worker {self.drm_name}] screen not initialized, cannot set points")
+            self.points = None
+            return
+        sw, sh = self.screen.get_size()
+        scaled_points = []
+        for p in points:
+            if len(p) != 2:
+                print(f"[worker {self.drm_name}] invalid point: {p}")
+                self.points = None
+                return
+            x = int(p[0] * sw)
+            y = int(p[1] * sh)
+            scaled_points.append((x, y))
+        self.points = scaled_points
+        print(f"[worker {self.drm_name}] set homography points: {self.points}")
 
     def preload_images(self, images: list[str]):
         print(f"[worker {self.drm_name}] preloading images: {images}")
@@ -293,7 +320,9 @@ class DisplayWorker:
                 if ctype == "PRELOAD_IMAGES":
                     self.preload_images(cmd.get("images", []))
                 elif ctype == "SHOW_IMAGE":
-                    self.show_image(cmd.get("image"), homography_pts=points)
+                    self.show_image(cmd.get("image"), homography_pts=self.points)
+                elif ctype == "SET_POINTS":
+                    self.set_points(cmd.get("points"))
                 elif ctype == "STOP":
                     running = False
             time.sleep(0.05)

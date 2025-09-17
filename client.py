@@ -193,6 +193,23 @@ def on_config(data):
         if not cfg:
             safe_print("Failed loading local config in CONFIG")
             return
+        homographies = data.get("homographies", {})
+        if homographies:
+            for display_name, hdata in homographies.items():
+                points = hdata.get("matrix")
+                if not points or len(points) != 4:
+                    safe_print(f"Invalid homography points for {display_name}")
+                    continue
+                cmd_queue = CMD_QUEUES.get(display_name)
+                if not cmd_queue:
+                    safe_print(f"No worker for display {display_name} to set homography")
+                    continue
+                cmd_queue.put({
+                    "type": "SET_POINTS",
+                    "points": points
+                })
+                safe_print(f"Sent SET_HOMOGRAPHY to {display_name} with points: {points}")
+        # update local config
         cfg.update(data)
         save_local_config(cfg)
         LOCAL_CFG = cfg
