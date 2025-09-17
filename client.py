@@ -100,6 +100,19 @@ def start_display_worker_process(drm_name: str) -> Process:
     DISPLAY_PROCS[drm_name] = proc
     CMD_QUEUES[drm_name] = cmd_queue
     print(LOG_PREFIX, f"Started display worker for {drm_name} (PID {proc.pid})")
+    with config_lock:
+        cfg = load_local_config()
+        homographs = cfg.get("homographies", {})
+        if homographs:
+            hdata = homographs.get(drm_name)
+            if hdata:
+                points = hdata.get("matrix")
+                if points and len(points) == 4:
+                    cmd_queue.put({
+                        "type": "SET_POINTS",
+                        "points": points
+                    })
+                    print(f"[client] Sent initial SET_POINTS to {drm_name} with points: {points}")
     return proc
 
 def _run_display_worker_subprocess(drm_name: str):
