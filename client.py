@@ -228,6 +228,62 @@ def on_config(data):
         LOCAL_CFG = cfg
     safe_print("Local config updated with CONFIG payload")
 
+# @app.route("/calibrate/<client_id>/<display_name>", methods=["POST"])
+# def api_calibrate_display(client_id, display_name):
+#     sid = connected_clients.get(client_id)
+#     if not sid:
+#         return {"ok": False, "error": f"client {client_id} not connected"}, 400
+#     socketio.emit("CALIBRATE_DISPLAY", {"display_name": display_name}, room=sid)
+#     return {"ok": True, "client_id": client_id, "display_name": display_name}
+# enter calibration mode
+@sio.on("CALIBRATE_DISPLAY")
+def on_calibrate_display(data):
+    """
+    Example payload:
+    {
+      "display_name": "HDMI-A-1",
+    }
+    """
+    display_name = data.get("display_name")
+    if not display_name:
+        safe_print("CALIBRATE_DISPLAY missing display_name in payload", data)
+        return
+    print(f"[client] CALIBRATE_DISPLAY received for {display_name}")
+    cmd_queue = CMD_QUEUES.get(display_name)
+    if not cmd_queue:
+        safe_print(f"[client] No worker for display {display_name} to enter calibration")
+        return
+    cmd_queue.put({"type":"ENTER_CALIBRATION"})
+    print(f"[client] Sent ENTER_CALIBRATION to {display_name}")
+
+@sio.on("EXIT_CALIBRATE_DISPLAY")
+def on_exit_calibrate_display(data):
+    """
+    Example payload:
+    {
+      "display_name": "HDMI-A-1",
+    }
+    """
+    display_name = data.get("display_name")
+    if not display_name:
+        safe_print("EXIT_CALIBRATE_DISPLAY missing display_name in payload", data)
+        return
+    print(f"[client] EXIT_CALIBRATE_DISPLAY received for {display_name}")
+    cmd_queue = CMD_QUEUES.get(display_name)
+    if not cmd_queue:
+        safe_print(f"[client] No worker for display {display_name} to exit calibration")
+        return
+    cmd_queue.put({"type":"EXIT_CALIBRATION"})
+    print(f"[client] Sent EXIT_CALIBRATION to {display_name}")
+
+
+@sio.on("CALIBRATE_ALL")
+def on_enter_calibration_all(_):
+    print(f"[client] CALIBRATE_ALL received")
+    for drm_name, cmd_queue in CMD_QUEUES.items():
+        cmd_queue.put({"type":"ENTER_CALIBRATION"})
+        print(f"[client] Sent ENTER_CALIBRATION to {drm_name}")
+
 
 # presentation socket events
 @sio.on("START_PRESENTATION")

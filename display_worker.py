@@ -152,9 +152,12 @@ class DisplayWorker:
         self.cmd_queue = cmd_queue
         self.ack_queue = ack_queue
         self.client_id = client_id
+        self.calibration_mode = False
         self.images = {}  # key: img_base, value: pygame.Surface
         self.current_image = None
         self.screen = None
+        self.width = 0
+        self.height = 0
         self.display_index = 0
         self.points = None  # no homography by default
 
@@ -209,6 +212,57 @@ class DisplayWorker:
                     print(f"[worker {self.drm_name}] failed to load {out_path}: {e}")
         print(f"[worker {self.drm_name}] preload done, {len(self.images)} images loaded")
         self.ack_queue.put({"type": "PRELOAD_DONE", "display": self.drm_name})
+
+    def enter_calibration_mode(self):
+        """ Enter calibration mode: show a white background with a test grid with grid size of width / 50"""
+        if not self.screen:
+            print(f"[{self.drm_name}] screen not initialized, cannot enter calibration mode")
+            return
+        print(f"[{self.drm_name}] entering calibration mode")
+        self.calibration_mode = True
+        self.draw_calibration_grid()
+        self.ack_queue.put({"type": "CALIBRATION_MODE", "display": self.drm_name})
+
+        
+    def draw_calibration_grid(self):
+        if not self.calibration_mode or not self.screen:
+            return
+        sw, sh = self.width, self.height
+        self.screen.fill((255, 255, 255))
+
+        grid_size = sw / 50  # use float division
+
+        x = 0
+        while x <= sw:
+            pygame.draw.line(self.screen, (200, 200, 200), (x, 0), (x, sh))
+            x += grid_size
+
+        y = 0
+        while y <= sh:
+            pygame.draw.line(self.screen, (200, 200, 200), (0, y), (sw, y))
+            y += grid_size
+
+        pygame.display.flip()
+
+    def draw_homography_overlay(self):
+        """ Draw the homography points overlay on the screen for calibration. """
+        if not self.points or not self.screen:
+            return
+        for i, (x, y) in enumerate(self.points):
+            pygame.draw.circle(self.screen, (255, 0, 0), (x, y), 10)
+        pygame.display.flip()
+
+
+    def exit_calibration_mode(self):
+        """ Exit calibration mode: show black screen. """
+        if not self.screen:
+            print(f"[{self.drm_name}] screen not initialized, cannot exit calibration mode")
+            return
+        print(f"[{self.drm_name}] exiting calibration mode")
+        self.calibration_mode = False
+        self.screen.fill((0, 0, 0))
+        pygame.display.flip()
+        self.ack_queue.put({"type": "EXITED_CALIBRATION", "display": self.drm_name})
 
     def show_image(self, img: str, homography_pts=None):
         """
@@ -277,6 +331,8 @@ class DisplayWorker:
         disp_bounds = pygame.display.get_desktop_sizes()[self.display_index]
         print(f"[{self.drm_name}] display {self.display_index} bounds: {disp_bounds}")
         sw, sh = disp_bounds
+        self.width = sw
+        self.height = sh
         print(f"[{self.drm_name}] desktop size for index {self.display_index}: {sw}x{sh}")
 
         # Open the window on that display
@@ -321,12 +377,21 @@ class DisplayWorker:
                     self.preload_images(cmd.get("images", []))
                 elif ctype == "SHOW_IMAGE":
                     self.show_image(cmd.get("image"), homography_pts=self.points)
+                elif ctype == "ENTER_CALIBRATION":
+                    self.enter_calibration_mode()
+                elif ctype == "EXIT_CALIBRATION":
+                    #show black screen
+                    self.exit_calibration_mode()
                 elif ctype == "SET_POINTS":
                     self.set_points(cmd.get("points"))
                 elif ctype == "STOP":
                     running = False
+            
+            if self.calibration_mode:
+                # keep showing calibration grid
+                self.draw_calibration_grid()
+                self.draw_homography_overlay()
             time.sleep(0.05)
-
         pygame.quit()
 
 
