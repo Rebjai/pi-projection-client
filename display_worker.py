@@ -391,7 +391,6 @@ class DisplayWorker:
                 # keep showing calibration grid
                 self.draw_calibration_grid()
                 self.draw_homography_overlay()
-            time.sleep(0.05)
         pygame.quit()
 
 
