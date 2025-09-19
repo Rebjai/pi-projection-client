@@ -220,8 +220,6 @@ class DisplayWorker:
             return
         print(f"[{self.drm_name}] entering calibration mode")
         self.calibration_mode = True
-        self.draw_calibration_grid()
-        self.draw_homography_overlay()
         self.ack_queue.put({"type": "CALIBRATION_MODE", "display": self.drm_name})
 
         
@@ -380,6 +378,9 @@ class DisplayWorker:
                     self.set_points(cmd.get("points"))
                 elif ctype == "STOP":
                     running = False
+                elif self.calibration_mode:
+                    self.draw_calibration_grid()
+                    self.draw_homography_overlay()
         pygame.quit()
 
 
