@@ -221,6 +221,7 @@ class DisplayWorker:
         print(f"[{self.drm_name}] entering calibration mode")
         self.calibration_mode = True
         self.draw_calibration_grid()
+        self.draw_homography_overlay()
         self.ack_queue.put({"type": "CALIBRATION_MODE", "display": self.drm_name})
 
         
@@ -362,35 +363,23 @@ class DisplayWorker:
 
         running = True
         while running:
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    running = False
-                elif event.type == pygame.VIDEOEXPOSE:
-                    # redraw current image if screen cleared
-                    if self.current_image:
-                        self._blit_fullscreen(self.images[self.current_image])
-
             while not self.cmd_queue.empty():
                 cmd = self.cmd_queue.get()
                 ctype = cmd.get("type")
                 if ctype == "PRELOAD_IMAGES":
                     self.preload_images(cmd.get("images", []))
-                elif ctype == "SHOW_IMAGE":
+                elif ctype == "SHOW_IMAGE" and cmd.get("image") and self.calibration_mode == False:
                     self.show_image(cmd.get("image"), homography_pts=self.points)
-                elif ctype == "ENTER_CALIBRATION":
-                    self.enter_calibration_mode()
-                elif ctype == "EXIT_CALIBRATION":
-                    #show black screen
+                elif ctype == "EXIT_CALIBRATION" and self.calibration_mode == True:
                     self.exit_calibration_mode()
+                elif ctype == "ENTER_CALIBRATION" and self.calibration_mode == False:
+                    print(f"[{self.drm_name}] entering calibration mode as per command")
+                    self.enter_calibration_mode()
+                    #show black screen
                 elif ctype == "SET_POINTS":
                     self.set_points(cmd.get("points"))
                 elif ctype == "STOP":
                     running = False
-            
-            if self.calibration_mode:
-                # keep showing calibration grid
-                self.draw_calibration_grid()
-                self.draw_homography_overlay()
         pygame.quit()
 
 
