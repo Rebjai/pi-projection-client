@@ -20,6 +20,7 @@ from multiprocessing import Process, Queue
 from urllib.parse import urlparse
 from typing import Dict, Any, List
 from display_worker import run_display_worker
+from image_slicer import slice_all, get_safe_filename_without_extension
 
 
 import numpy as np
@@ -28,6 +29,7 @@ import socketio  # python-socketio client
 
 # Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
 CONFIG_DIR = os.path.join(BASE_DIR, "config")
 LOCAL_CONFIG_PATH = os.path.join(CONFIG_DIR, "client.json")  # local editable config
 TILES_DIR = os.path.join(BASE_DIR, "tiles")
@@ -179,13 +181,24 @@ def connect():
 def on_registered(data):
     safe_print("Server registered response:", data)
 
-@sio.on("FETCH_TILES")
-def on_assign_tiles(payload):
+@sio.on("FETCH_ALL_IMAGES")
+def on_fetch_all_tiles(payload):
+    """
+    payload example:
+    {
+      "images": ["name1.png", "name2.jpg", ...],
+    }
+    """
     try:
-        safe_print("FETCH_TILES received:", payload.get("filename"))
-        handle_assign_tiles(payload)
+        safe_print("FETCH_ALL_IMAGES received:", payload)
+        images = payload.get("images", [])
+        for img in images:
+            download_uploaded_files({"filename": img})
+        slice_all()
+        safe_print("All tiles fetched and sliced")
+        sio.emit("ALL_TILES_READY", {"client_id": CLIENT_ID, "ok": True})
     except Exception as e:
-        safe_print("Error in ASSIGN_TILES:", e, traceback.format_exc())
+        safe_print("Error in FETCH_ALL_TILES:", e, traceback.format_exc())
 
 @sio.on("SHOW")
 def on_show(payload):
@@ -399,7 +412,7 @@ def disconnect():
     safe_print("Disconnected from server")
 
 # --- Handlers ---
-def handle_assign_tiles(payload: Dict[str, Any]):
+def download_uploaded_files(payload: Dict[str, Any]):
     """
     payload example:
     {
@@ -414,33 +427,15 @@ def handle_assign_tiles(payload: Dict[str, Any]):
     if not filename:
         safe_print("No filename in ASSIGN_TILES payload")
         return
-    safe_filename = get_safe_filename_without_extension(filename)
-    print(LOG_PREFIX, "Safe filename:", safe_filename)
-    cfg = LOCAL_CFG
-    if not cfg:
-        safe_print("Failed loading local config in ASSIGN_TILES")
+    url = f"{SERVER_URL}/uploads/{filename}"
+    out_path = os.path.join(UPLOADS_DIR, filename)
+    try:
+        download_file(url, out_path)
+        #end and exit try
+    except Exception as e:
+        safe_print("Error downloading uploaded file:", e)
         return
-    for d in cfg.get("displays", []):
-        hdmi_output = d.get("name")
-        if not hdmi_output:
-            continue
-        url = f"{SERVER_URL}/tiles/{safe_filename}/client_{CLIENT_ID}_tile_{hdmi_output}.png"
-        local_folder = os.path.join(TILES_DIR, safe_filename)
-        os.makedirs(local_folder, exist_ok=True)
-        out_path = os.path.join(local_folder, f"{CLIENT_ID}_tile_{hdmi_output}.png")
-        try:
-            download_file(url, out_path)
-            #end and exit try
-        except Exception as e:
-            safe_print("Failed downloading tile for hdmi", hdmi_output, "err", e)
-            continue
 
-def get_safe_filename_without_extension(fname: str) -> str:
-    # Remove any path components and keep only alphanum, dash, underscore, dot
-    image_basename = os.path.splitext(os.path.basename(fname))[0]
-    safe = image_basename.replace(" ", "_")
-    # Remove extension
-    return safe
     
 
 def handle_show(payload: Dict[str, Any]):
